@@ -10,7 +10,6 @@ app = FastAPI(
 )
 
 app.include_router(health.router, tags=["Health"])
-
 app.include_router(
     documents.router,
     prefix="/api/documents",

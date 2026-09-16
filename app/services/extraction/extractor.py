@@ -4,7 +4,6 @@ import io
 import os
 
 from pdf2image import convert_from_bytes
-
 from openai import OpenAI
 
 from app.schemas.documents import (
