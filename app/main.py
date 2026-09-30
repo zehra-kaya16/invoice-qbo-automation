@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api import documents, health
+from app.api import documents, health, qbo
 
 
 app = FastAPI(
@@ -15,7 +15,11 @@ app.include_router(
     prefix="/api/documents",
     tags=["Documents"],
 )
-
+app.include_router(
+    qbo.router,
+    prefix="/api/qbo",
+    tags=["QuickBooks"],
+)
 @app.get("/api")
 async def api_info():
     return {

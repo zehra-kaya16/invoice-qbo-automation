@@ -6,4 +6,7 @@ pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 openai>=1.10.0
 pillow>=10.2.0
-pdf2image>=1.17.0
+pypdfium2
+# QuickBooks
+intuit-oauth>=1.2.6
+python-quickbooks>=0.9.7
