@@ -1071,6 +1071,83 @@ class QBOClient:
             "date": date,
         }
 
+    def update_purchase_category(
+        self,
+        purchase_id: str,
+        account_id: str,
+    ) -> dict:
+        """
+        Update the expense account/category of an existing
+        QBO Purchase without creating a new transaction.
+        """
+
+        if not self.qb_client:
+            raise ValueError(
+                "QuickBooks client is not initialized."
+            )
+
+        purchase = Purchase.get(
+            purchase_id,
+            qb=self.qb_client,
+        )
+
+        if purchase is None:
+            raise ValueError(
+                "QBO Purchase was not found"
+            )
+
+        lines = getattr(
+            purchase,
+            "Line",
+            None,
+        ) or []
+
+        target_line = None
+
+        for line in lines:
+            if (
+                getattr(
+                    line,
+                    "DetailType",
+                    None,
+                )
+                == "AccountBasedExpenseLineDetail"
+            ):
+                target_line = line
+                break
+
+        if target_line is None:
+            raise ValueError(
+                "QBO Purchase has no "
+                "AccountBasedExpenseLineDetail"
+            )
+
+        detail = getattr(
+            target_line,
+            "AccountBasedExpenseLineDetail",
+            None,
+        )
+
+        if detail is None:
+            raise ValueError(
+                "QBO Purchase expense line "
+                "detail is missing"
+            )
+
+        detail.AccountRef = {
+            "value": str(account_id),
+        }
+
+        purchase.save(
+            qb=self.qb_client
+        )
+
+        return {
+            "id": str(purchase.Id),
+            "type": "purchase",
+            "account_id": str(account_id),
+        }
+
     def upload_attachment(
         self,
         file_path: str,

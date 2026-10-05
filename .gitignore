@@ -23,3 +23,9 @@ uploads/
 # Logs
 *.log
 logs/
+
+# Coverage reports
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml

@@ -18,7 +18,8 @@ from app.schemas.documents import (
     ProcessingStatus,
     ReceiptData,
     PushToQBOResponse,
-    BankMatchReviewRequest
+    BankMatchReviewRequest,
+    CategoryReviewRequest
 )
 from app.services.qbo.push_guard import (
     QBOPushGuardError,
@@ -31,6 +32,10 @@ from app.services.qbo.push_guard import (
 
 from app.services.matching.matcher import (
     BankFeedMatcher,
+)
+
+from app.services.categorization.categorizer import (
+    TransactionCategorizer,
 )
 
 router = APIRouter()
@@ -729,6 +734,407 @@ def _validate_bank_statement_vendors_for_push(
             },
         )
 
+def _prepare_reviewed_bank_statement_categories(
+    document: dict,
+) -> list[dict]:
+    category_suggestions = document.get(
+        "category_suggestions"
+    )
+
+    if category_suggestions is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Category suggestions have not "
+                "been generated before push"
+            ),
+        )
+
+    pending_categories = [
+        item
+        for item in category_suggestions
+        if item.get(
+            "review_status",
+            "pending",
+        )
+        == "pending"
+    ]
+
+    if pending_categories:
+        pending_indexes = [
+            item.get("transaction_index")
+            for item in pending_categories
+        ]
+
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    "All category suggestions "
+                    "must be reviewed before push"
+                ),
+                "pending_transaction_indexes": (
+                    pending_indexes
+                ),
+            },
+        )
+
+    category_updates = []
+
+    for item in category_suggestions:
+        review_status = item.get(
+            "review_status"
+        )
+
+        if review_status == "rejected":
+            continue
+
+        if review_status not in (
+            "approved",
+            "manual_override",
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Invalid category review status"
+                ),
+            )
+
+        qbo_transaction_type = item.get(
+            "qbo_transaction_type"
+        )
+
+        if qbo_transaction_type != "purchase":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Category write currently "
+                    "supports purchase "
+                    "transactions only"
+                ),
+            )
+
+        qbo_transaction_id = item.get(
+            "qbo_transaction_id"
+        )
+
+        if not qbo_transaction_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Reviewed category has no "
+                    "QBO transaction ID"
+                ),
+            )
+
+        reviewed_category = item.get(
+            "reviewed_category"
+        )
+
+        if not reviewed_category:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Reviewed category is missing"
+                ),
+            )
+
+        account_id = reviewed_category.get(
+            "id"
+        )
+
+        if not account_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Reviewed category has no "
+                    "QBO account ID"
+                ),
+            )
+
+        category_updates.append(
+            {
+                "transaction_index": item.get(
+                    "transaction_index"
+                ),
+                "qbo_transaction_id": str(
+                    qbo_transaction_id
+                ),
+                "qbo_transaction_type": (
+                    qbo_transaction_type
+                ),
+                "account_id": str(
+                    account_id
+                ),
+                "category_name": (
+                    reviewed_category.get(
+                        "name"
+                    )
+                ),
+            }
+        )
+
+    return category_updates
+
+def _push_bank_statement_categories(
+    document: dict,
+    client,
+) -> dict:
+    category_updates = (
+        _prepare_reviewed_bank_statement_categories(
+            document
+        )
+    )
+
+    category_suggestions = document.get(
+        "category_suggestions",
+        [],
+    )
+
+    updated_count = 0
+    skipped_count = 0
+    errors = []
+    results = []
+
+    for item in category_suggestions:
+        if item.get("review_status") != "rejected":
+            continue
+
+        skipped_count += 1
+
+        results.append(
+            {
+                "transaction_index": item.get(
+                    "transaction_index"
+                ),
+                "qbo_transaction_id": item.get(
+                    "qbo_transaction_id"
+                ),
+                "qbo_account_id": None,
+                "status": "skipped_rejected",
+            }
+        )
+
+    for update in category_updates:
+        transaction_index = update.get(
+            "transaction_index"
+        )
+
+        selected_category = next(
+            (
+                item
+                for item in category_suggestions
+                if item.get("transaction_index")
+                == transaction_index
+            ),
+            None,
+        )
+
+        if selected_category is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Category review state was "
+                    "not found during QBO push"
+                ),
+            )
+
+        desired_account_id = str(
+            update["account_id"]
+        )
+
+        current_push_status = (
+            selected_category.get(
+                "qbo_category_push_status",
+                "not_pushed",
+            )
+        )
+
+        pushed_account_id = (
+            selected_category.get(
+                "qbo_category_account_id"
+            )
+        )
+
+        # --------------------------------------
+        # IDEMPOTENCY:
+        # The same reviewed category has already
+        # been written successfully to QBO.
+        # --------------------------------------
+        if (
+            current_push_status == "pushed"
+            and pushed_account_id is not None
+            and str(pushed_account_id)
+            == desired_account_id
+        ):
+            skipped_count += 1
+
+            results.append(
+                {
+                    "transaction_index": (
+                        transaction_index
+                    ),
+                    "qbo_transaction_id": (
+                        update[
+                            "qbo_transaction_id"
+                        ]
+                    ),
+                    "qbo_account_id": (
+                        desired_account_id
+                    ),
+                    "status": "skipped",
+                    "reason": (
+                        "Category has already "
+                        "been pushed to QBO"
+                    ),
+                }
+            )
+
+            continue
+
+        # A previous operation may have stopped
+        # after entering the write phase.
+        if current_push_status in (
+            "pushing",
+            "uncertain",
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        "Category QBO update is "
+                        "already in progress or "
+                        "its previous result is "
+                        "uncertain"
+                    ),
+                    "transaction_index": (
+                        transaction_index
+                    ),
+                },
+            )
+
+        selected_category[
+            "qbo_category_push_status"
+        ] = "pushing"
+
+        selected_category[
+            "qbo_category_account_id"
+        ] = desired_account_id
+
+        selected_category[
+            "qbo_category_push_result"
+        ] = None
+
+        selected_category[
+            "qbo_category_push_error"
+        ] = None
+
+        try:
+            result = (
+                client.update_purchase_category(
+                    purchase_id=(
+                        update[
+                            "qbo_transaction_id"
+                        ]
+                    ),
+                    account_id=(
+                        desired_account_id
+                    ),
+                )
+            )
+
+            selected_category[
+                "qbo_category_push_status"
+            ] = "pushed"
+
+            selected_category[
+                "qbo_category_push_result"
+            ] = result
+
+            selected_category[
+                "qbo_category_push_error"
+            ] = None
+
+            updated_count += 1
+
+            results.append(
+                {
+                    "transaction_index": (
+                        transaction_index
+                    ),
+                    "qbo_transaction_id": (
+                        update[
+                            "qbo_transaction_id"
+                        ]
+                    ),
+                    "qbo_account_id": (
+                        desired_account_id
+                    ),
+                    "status": "updated",
+                    "result": result,
+                }
+            )
+
+        except Exception as exc:
+            selected_category[
+                "qbo_category_push_status"
+            ] = "uncertain"
+
+            selected_category[
+                "qbo_category_push_result"
+            ] = None
+
+            selected_category[
+                "qbo_category_push_error"
+            ] = str(exc)
+
+            errors.append(
+                {
+                    "transaction_index": (
+                        transaction_index
+                    ),
+                    "qbo_transaction_id": (
+                        update[
+                            "qbo_transaction_id"
+                        ]
+                    ),
+                    "error": str(exc),
+                }
+            )
+
+            results.append(
+                {
+                    "transaction_index": (
+                        transaction_index
+                    ),
+                    "qbo_transaction_id": (
+                        update[
+                            "qbo_transaction_id"
+                        ]
+                    ),
+                    "qbo_account_id": (
+                        desired_account_id
+                    ),
+                    "status": "failed",
+                    "error": str(exc),
+                }
+            )
+
+    document[
+        "category_suggestions"
+    ] = category_suggestions
+
+    document[
+        "category_push_results"
+    ] = results
+
+    return {
+        "updated_count": updated_count,
+        "skipped_count": skipped_count,
+        "errors": errors,
+        "updates": results,
+    }
+
 def _resolve_bank_statement_vendors(
     document: dict,
     client,
@@ -1005,22 +1411,78 @@ async def push_to_qbo(
                 ),
             )
 
-        from app.api.qbo import _get_connected_qbo_client
+        from app.api.qbo import (
+            _get_connected_qbo_client,
+        )
 
         client = _get_connected_qbo_client()
 
+        # 1. Match review gate
         _prepare_reviewed_bank_statement_matches(
             document
         )
 
+        # 2. Vendor gate
         _validate_bank_statement_vendors_for_push(
             document
         )
 
-        return _push_bank_statement_checks(
+        # 3. Category review + QBO category write
+        category_push_result = (
+            _push_bank_statement_categories(
+                document=document,
+                client=client,
+            )
+        )
+
+        # Fail closed:
+        # category write başarısız / belirsiz ise
+        # check attachment aşamasına geçme.
+        if category_push_result["errors"]:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": (
+                        "One or more category updates "
+                        "could not be confirmed in QBO. "
+                        "Check QuickBooks before retrying."
+                    ),
+                    "category_errors": (
+                        category_push_result["errors"]
+                    ),
+                },
+            )
+
+        # 4. Category write tamamlandıktan sonra
+        # check attachment push.
+        check_push_result = _push_bank_statement_checks(
             document_id=document_id,
             document=document,
             client=client,
+        )
+
+        return PushToQBOResponse(
+            id=check_push_result.id,
+            success=check_push_result.success,
+            transactions_pushed=(
+                check_push_result.transactions_pushed
+            ),
+            attachments_uploaded=(
+                check_push_result.attachments_uploaded
+            ),
+            vendors_created=(
+                check_push_result.vendors_created
+            ),
+            categories_updated=(
+                category_push_result["updated_count"]
+            ),
+            categories_skipped=(
+                category_push_result["skipped_count"]
+            ),
+            category_updates=(
+                category_push_result["updates"]
+            ),
+            errors=check_push_result.errors,
         )
 
     if document_type != DocumentType.INVOICE:
@@ -1357,6 +1819,15 @@ async def match_document_to_qbo(
     document = documents_db[
         document_id
     ]
+
+    if document.get("status") == ProcessingStatus.PUSHED:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Document already pushed to QBO; "
+                "rematching is not allowed."
+            ),
+        )
 
     if (
         document.get("document_type")
@@ -1835,6 +2306,634 @@ async def resolve_bank_statement_vendors(
         ),
     }
 
+@router.post(
+    "/{document_id}/suggest-categories"
+)
+async def suggest_bank_statement_categories(
+    document_id: str,
+):
+    if document_id not in documents_db:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found",
+        )
+
+    document = documents_db[document_id]
+
+    if (
+        document.get("document_type")
+        != DocumentType.BANK_STATEMENT
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Category suggestions are only "
+                "available for bank statements"
+            ),
+        )
+
+    match_results = document.get(
+        "qbo_match_results"
+    )
+
+    if not match_results:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Bank statement has not been "
+                "matched to QBO"
+            ),
+        )
+
+    pending_matches = [
+        item
+        for item in match_results
+        if item.get(
+            "review_status",
+            "pending",
+        )
+        == "pending"
+    ]
+
+    if pending_matches:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "All bank statement matches "
+                "must be reviewed first"
+            ),
+        )
+
+    check_match_results = document.get(
+        "check_match_results",
+        [],
+    )
+
+    unresolved_vendors = [
+        item
+        for item in check_match_results
+        if item.get(
+            "vendor_status",
+            "not_checked",
+        )
+        in (
+            "not_checked",
+            "missing",
+        )
+    ]
+
+    if unresolved_vendors:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Vendor resolution must be "
+                "completed before category "
+                "suggestion"
+            ),
+        )
+
+    from app.api.qbo import (
+        _get_connected_qbo_client,
+    )
+
+    client = _get_connected_qbo_client()
+
+    expense_accounts = (
+        client.get_expense_accounts()
+    )
+
+    extracted_data = document.get(
+        "extracted_data"
+    )
+
+    if not extracted_data:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Bank statement has no "
+                "extracted data"
+            ),
+        )
+
+    statement = BankStatementData(
+        **extracted_data
+    )
+
+    categorizer = TransactionCategorizer()
+
+    suggestions = []
+
+    for transaction_index, transaction in enumerate(
+        statement.transactions
+    ):
+        reviewed_result = next(
+            (
+                item
+                for item in match_results
+                if item.get("transaction_index")
+                == transaction_index
+            ),
+            None,
+        )
+
+        # There should normally be a match-review
+        # record for every extracted transaction.
+        if reviewed_result is None:
+            continue
+
+        review_status = reviewed_result.get(
+            "review_status"
+        )
+
+        # A rejected QBO match must never be used
+        # for category suggestion.
+        if review_status == "rejected":
+            transaction.category_suggestion = None
+            continue
+
+        if review_status not in (
+            "approved",
+            "manual_override",
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Invalid bank statement "
+                    "review status for category "
+                    "suggestion"
+                ),
+            )
+
+        reviewed_match = reviewed_result.get(
+            "reviewed_match"
+        )
+
+        if not reviewed_match:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Reviewed QBO match is missing "
+                    "for category suggestion"
+                ),
+            )
+
+        reviewed_qbo_transaction = (
+            reviewed_match.get("transaction")
+        )
+
+        if not reviewed_qbo_transaction:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Reviewed QBO transaction is "
+                    "missing for category suggestion"
+                ),
+            )
+
+        qbo_transaction_type = (
+            reviewed_qbo_transaction.get("type")
+        )
+
+        # Expense-category suggestion currently
+        # applies only to QBO Purchase transactions.
+        if qbo_transaction_type != "purchase":
+            transaction.category_suggestion = None
+            continue
+
+        category_match = (
+            categorizer.suggest_category(
+                transaction_description=(
+                    transaction.description
+                ),
+                vendor_name=(
+                    transaction.vendor_suggestion
+                ),
+                expense_accounts=(
+                    expense_accounts
+                ),
+            )
+        )
+
+        transaction.category_suggestion = (
+            category_match["name"]
+            if category_match
+            else None
+        )
+
+        suggestions.append(
+            {
+                "transaction_index": (
+                    transaction_index
+                ),
+                "description": (
+                    transaction.description
+                ),
+                "vendor_suggestion": (
+                    transaction.vendor_suggestion
+                ),
+                "qbo_transaction_id": str(
+                    reviewed_qbo_transaction["id"]
+                ),
+                "qbo_transaction_type": (
+                    qbo_transaction_type
+                ),
+                "category_suggestion": (
+                    category_match["name"]
+                    if category_match
+                    else None
+                ),
+                "category_match": (
+                    category_match
+                ),
+                "review_status": "pending",
+                "reviewed_category": None,
+                "qbo_category_push_status": (
+                    "not_pushed"
+                ),
+                "qbo_category_account_id": None,
+                "qbo_category_push_result": None,
+                "qbo_category_push_error": None,
+            }
+        )
+
+    document["extracted_data"] = (
+        statement.model_dump()
+    )
+
+    document[
+        "category_suggestions"
+    ] = suggestions
+
+    return {
+        "id": document_id,
+        "transactions_processed": len(
+            suggestions
+        ),
+        "suggested_count": sum(
+            1
+            for item in suggestions
+            if item[
+                "category_suggestion"
+            ]
+            is not None
+        ),
+        "suggestions": suggestions,
+    }
+
+@router.patch(
+    "/{document_id}/category-review/{transaction_index}"
+)
+async def review_bank_statement_category(
+    document_id: str,
+    transaction_index: int,
+    review: CategoryReviewRequest,
+):
+    if document_id not in documents_db:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found",
+        )
+
+    document = documents_db[document_id]
+
+    if (
+        document.get("document_type")
+        != DocumentType.BANK_STATEMENT
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Category review is only "
+                "available for bank statements"
+            ),
+        )
+
+    category_suggestions = document.get(
+        "category_suggestions"
+    )
+
+    if category_suggestions is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Category suggestions have not "
+                "been generated yet"
+            ),
+        )
+
+    selected_category = next(
+        (
+            item
+            for item in category_suggestions
+            if item.get("transaction_index")
+            == transaction_index
+        ),
+        None,
+    )
+
+    if selected_category is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Category suggestion for this "
+                "transaction was not found"
+            ),
+        )
+
+    # Defensive check:
+    # category review currently supports only
+    # QBO Purchase transactions.
+    if (
+        selected_category.get(
+            "qbo_transaction_type"
+        )
+        != "purchase"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Category review currently "
+                "supports purchase "
+                "transactions only"
+            ),
+        )
+
+    if selected_category.get("qbo_category_push_status") == "pushed":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Category review cannot be changed "
+                "after it has been pushed to QBO"
+            ),
+        )
+    
+    if review.decision == "approve":
+        category_match = (
+            selected_category.get(
+                "category_match"
+            )
+        )
+
+        if not category_match:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "There is no suggested "
+                    "category to approve"
+                ),
+            )
+
+        selected_category[
+            "review_status"
+        ] = "approved"
+
+        selected_category[
+            "reviewed_category"
+        ] = category_match
+
+    elif review.decision == "reject":
+        selected_category[
+            "review_status"
+        ] = "rejected"
+
+        selected_category[
+            "reviewed_category"
+        ] = None
+
+    elif review.decision == "manual_override":
+        if not review.qbo_account_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "qbo_account_id is required "
+                    "for manual_override"
+                ),
+            )
+
+        from app.api.qbo import (
+            _get_connected_qbo_client,
+        )
+
+        client = (
+            _get_connected_qbo_client()
+        )
+
+        expense_accounts = (
+            client.get_expense_accounts()
+        )
+
+        selected_account = next(
+            (
+                account
+                for account in expense_accounts
+                if str(
+                    account.get("id")
+                )
+                == str(
+                    review.qbo_account_id
+                )
+            ),
+            None,
+        )
+
+        if selected_account is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Selected QBO expense "
+                    "account does not exist"
+                ),
+            )
+
+        selected_category[
+            "review_status"
+        ] = "manual_override"
+
+        selected_category[
+            "reviewed_category"
+        ] = {
+            "id": str(
+                selected_account["id"]
+            ),
+            "name": (
+                selected_account["name"]
+            ),
+            "fully_qualified_name": (
+                selected_account.get(
+                    "fully_qualified_name"
+                )
+                or selected_account["name"]
+            ),
+        }
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid category review "
+                "decision"
+            ),
+        )
+
+    extracted_data = document.get(
+        "extracted_data"
+    )
+
+    if not extracted_data:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Bank statement has no "
+                "extracted data"
+            ),
+        )
+
+    statement = BankStatementData(
+        **extracted_data
+    )
+
+    if (
+        transaction_index < 0
+        or transaction_index
+        >= len(statement.transactions)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid transaction index"
+            ),
+        )
+
+    transaction = (
+        statement.transactions[
+            transaction_index
+        ]
+    )
+
+    reviewed_category = (
+        selected_category.get(
+            "reviewed_category"
+        )
+    )
+
+    if reviewed_category:
+        transaction.category_suggestion = (
+            reviewed_category["name"]
+        )
+    else:
+        transaction.category_suggestion = (
+            None
+        )
+
+    document["extracted_data"] = (
+        statement.model_dump()
+    )
+
+    document[
+        "category_suggestions"
+    ] = category_suggestions
+
+    return {
+        "id": document_id,
+        "transaction_index": (
+            transaction_index
+        ),
+        "review_status": (
+            selected_category[
+                "review_status"
+            ]
+        ),
+        "reviewed_category": (
+            selected_category.get(
+                "reviewed_category"
+            )
+        ),
+    }
+
+@router.get(
+    "/{document_id}/category-review"
+)
+async def get_bank_statement_category_review(
+    document_id: str,
+):
+    if document_id not in documents_db:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found",
+        )
+
+    document = documents_db[document_id]
+
+    if (
+        document.get("document_type")
+        != DocumentType.BANK_STATEMENT
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Category review is only "
+                "available for bank statements"
+            ),
+        )
+
+    category_suggestions = document.get(
+        "category_suggestions"
+    )
+
+    if category_suggestions is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Category suggestions have not "
+                "been generated yet"
+            ),
+        )
+
+    pending_count = sum(
+        1
+        for item in category_suggestions
+        if item.get(
+            "review_status",
+            "pending",
+        )
+        == "pending"
+    )
+
+    approved_count = sum(
+        1
+        for item in category_suggestions
+        if item.get("review_status")
+        == "approved"
+    )
+
+    rejected_count = sum(
+        1
+        for item in category_suggestions
+        if item.get("review_status")
+        == "rejected"
+    )
+
+    manual_override_count = sum(
+        1
+        for item in category_suggestions
+        if item.get("review_status")
+        == "manual_override"
+    )
+
+    return {
+        "id": document_id,
+        "total_categories": len(
+            category_suggestions
+        ),
+        "pending_count": pending_count,
+        "approved_count": approved_count,
+        "rejected_count": rejected_count,
+        "manual_override_count": (
+            manual_override_count
+        ),
+        "categories": category_suggestions,
+    }
+
 @router.patch(
     "/{document_id}/match-review/{transaction_index}"
 )
@@ -1892,6 +2991,15 @@ async def review_bank_statement_match(
             detail=(
                 "Transaction match result "
                 "not found"
+            ),
+        )
+
+    if document.get("status") == ProcessingStatus.PUSHED:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Match review cannot be changed "
+                "after the document has been pushed to QBO"
             ),
         )
 

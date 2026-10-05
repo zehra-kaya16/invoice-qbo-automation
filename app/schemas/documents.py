@@ -191,6 +191,15 @@ class BankMatchReviewRequest(BaseModel):
     qbo_transaction_id: Optional[str] = None
     qbo_transaction_type: Optional[str] = None
 
+class CategoryReviewRequest(BaseModel):
+    decision: Literal[
+        "approve",
+        "reject",
+        "manual_override",
+    ]
+
+    qbo_account_id: Optional[str] = None
+
 class DocumentUploadResponse(BaseModel):
     id: str
     filename: str
@@ -215,3 +224,6 @@ class PushToQBOResponse(BaseModel):
     attachments_uploaded: int
     vendors_created: int
     errors: List[str]
+    categories_updated: int = 0
+    categories_skipped: int = 0
+    category_updates: list[dict] = Field(default_factory=list)
