@@ -7,6 +7,12 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: Optional[str] = None
 
+    # Database
+    database_url: Optional[str] = None
+
+    # Redis
+    redis_url: Optional[str] = None
+
     # QuickBooks Online
     qbo_client_id: Optional[str] = None
     qbo_client_secret: Optional[str] = None

@@ -9,6 +9,7 @@ from openai import OpenAI
 from app.schemas.documents import (
     BankStatementData,
     BankTransaction,
+    CheckData,
     CheckImage,
     DocumentType,
     LineItem,
@@ -199,6 +200,77 @@ class DocumentExtractor:
             line_items=line_items,
             category_suggestion=data.get(
                 "category_suggestion"
+            ),
+            confidence=0.85,
+        )
+
+    def extract_check(
+        self,
+        image_data: bytes,
+    ) -> CheckData:
+        prompt = """
+        Extract the information visible in this check image.
+
+        Return only a valid JSON object with these fields:
+
+        {
+            "check_number": null,
+            "payee": null,
+            "amount": null,
+            "date": null,
+            "memo": null,
+            "bank_name": null,
+            "routing_number": null,
+            "account_number_last4": null
+        }
+
+        Use YYYY-MM-DD for the date.
+
+        Return monetary values as JSON numbers without
+        currency symbols or thousands separators.
+
+        For account_number_last4, return only the last
+        four digits if visible.
+
+        If a value cannot be determined reliably,
+        use null.
+
+        Do not add explanations outside the JSON.
+        """
+
+        response = self._vision_request(
+            image_data,
+            prompt,
+        )
+
+        data = self._parse_json(
+            response
+        )
+
+        return CheckData(
+            check_number=data.get(
+                "check_number"
+            ),
+            payee=data.get(
+                "payee"
+            ),
+            amount=data.get(
+                "amount"
+            ),
+            date=data.get(
+                "date"
+            ),
+            memo=data.get(
+                "memo"
+            ),
+            bank_name=data.get(
+                "bank_name"
+            ),
+            routing_number=data.get(
+                "routing_number"
+            ),
+            account_number_last4=data.get(
+                "account_number_last4"
             ),
             confidence=0.85,
         )
@@ -427,7 +499,8 @@ class DocumentExtractor:
 
         {
             "check_number": null,
-            "payee": null,
+            "pay
+            e": null,
             "amount": null,
             "date": null,
             "memo": null

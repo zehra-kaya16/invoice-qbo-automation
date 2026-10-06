@@ -1,0 +1,85 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql://receiptai:receiptai@db:5432/receiptai
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_TYPE=local
+      - LOCAL_STORAGE_PATH=/app/uploads
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./uploads:/app/uploads
+      - ./app:/app/app
+
+    depends_on:
+      - db
+      - redis
+
+    restart: unless-stopped
+
+
+  db:
+    image: postgres:16-alpine
+
+    environment:
+      - POSTGRES_USER=receiptai
+      - POSTGRES_PASSWORD=receiptai
+      - POSTGRES_DB=receiptai
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    ports:
+      - "5432:5432"
+
+    restart: unless-stopped
+
+
+  redis:
+    image: redis:7-alpine
+
+    ports:
+      - "6379:6379"
+
+    restart: unless-stopped
+
+
+  worker:
+    build: .
+
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql://receiptai:receiptai@db:5432/receiptai
+      - REDIS_URL=redis://redis:6379/0
+      - STORAGE_TYPE=local
+      - LOCAL_STORAGE_PATH=/app/uploads
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./uploads:/app/uploads
+      - ./app:/app/app
+
+    depends_on:
+      - db
+      - redis
+
+    command: celery -A app.tasks worker --loglevel=info
+
+    healthcheck:
+      disable: true
+      
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

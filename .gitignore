@@ -29,3 +29,8 @@ logs/
 .coverage.*
 htmlcov/
 coverage.xml
+
+receipt_ai.db
+receipt_ai.db-*
+.coverage
+htmlcov/
