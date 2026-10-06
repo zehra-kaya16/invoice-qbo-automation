@@ -1,26 +1,31 @@
 import os
 import tempfile
-from pathlib import Path
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel
-from app.services.validation.invoice_validator import validate_invoice
-
-from app.services.qbo.mapper import build_qbo_create_plan
 
 from app.schemas.documents import (
+    BankMatchReviewRequest,
     BankStatementData,
+    CategoryReviewRequest,
+    CheckData,
     DocumentType,
     DocumentUploadResponse,
     ExtractionResponse,
     ProcessingStatus,
-    ReceiptData,
     PushToQBOResponse,
-    BankMatchReviewRequest,
-    CategoryReviewRequest
+    ReceiptData,
 )
+from app.services.categorization.categorizer import (
+    TransactionCategorizer,
+)
+from app.services.matching.matcher import (
+    BankFeedMatcher,
+)
+from app.services.qbo.mapper import build_qbo_create_plan
 from app.services.qbo.push_guard import (
     QBOPushGuardError,
     ensure_invoice_can_start_push,
@@ -29,14 +34,7 @@ from app.services.qbo.push_guard import (
     mark_invoice_push_succeeded,
     mark_invoice_push_uncertain,
 )
-
-from app.services.matching.matcher import (
-    BankFeedMatcher,
-)
-
-from app.services.categorization.categorizer import (
-    TransactionCategorizer,
-)
+from app.services.validation.invoice_validator import validate_invoice
 
 router = APIRouter()
 
@@ -117,31 +115,38 @@ async def upload_document(
         content = await file.read()
 
         documents_db[document_id] = {
-        "id": document_id,
-        "filename": file.filename,
-        "content_type": content_type,
-        "content": content,
-        "company_id": company_id,
-        "status": ProcessingStatus.UPLOADED,
-        "document_type": None,
-        "extracted_data": None,
-        "validation": None,
-        "approved": False,
-        "qbo_push_state": "not_started",
-        "qbo_transaction_id": None,
-        "qbo_transaction_type": None,
-        "qbo_push_error": None,
-    }  
+            "id": document_id,
+            "filename": file.filename,
+            "content_type": content_type,
+            "content": content,
+            "company_id": company_id,
+            "status": ProcessingStatus.UPLOADED,
+            "document_type": None,
+            "extracted_data": None,
+            "validation": None,
+            "approved": False,
+            "qbo_push_state": "not_started",
+            "qbo_transaction_id": None,
+            "qbo_transaction_type": None,
+            "qbo_push_error": None,
+        }  
+        if auto_process and background_tasks:
+            background_tasks.add_task(
+                process_document,
+                document_id,
+            )
 
         return DocumentUploadResponse(
-        id=document_id,
-        filename=file.filename or "unknown",
-        status=ProcessingStatus.UPLOADED,
-        message=(
-            "Document uploaded. "
-            "Automatic processing will be added in the extraction stage."
-        ),
-    )
+            id=document_id,
+            filename=file.filename or "unknown",
+            status=ProcessingStatus.UPLOADED,
+            message=(
+                "Document uploaded successfully. Processing started."
+                if auto_process
+                else
+                "Document uploaded. Call /extract to process."
+            ),
+        )
 
 @router.get("/{document_id}", response_model=DocumentStatus)
 async def get_document(document_id: str):
@@ -201,14 +206,27 @@ async def process_document(document_id: str):
     try:
         document["status"] = ProcessingStatus.CLASSIFYING
 
-        api_key = os.getenv("OPENAI_API_KEY")
+        api_key = (
+            os.getenv("OPENAI_API_KEY")
+            or os.getenv("ANTHROPIC_API_KEY")
+        )
 
         if not api_key:
-            document["status"] = ProcessingStatus.FAILED
+            document["status"] = (
+                ProcessingStatus.FAILED
+            )
+
             document["error"] = (
                 "No AI API key configured"
             )
+
             return
+
+        provider = (
+            "openai"
+            if os.getenv("OPENAI_API_KEY")
+            else "anthropic"
+        )
 
         from app.services.extraction.extractor import (
             DocumentExtractor,
@@ -216,6 +234,7 @@ async def process_document(document_id: str):
 
         extractor = DocumentExtractor(
             api_key=api_key,
+            provider=provider,
         )
 
         content = document["content"]
@@ -324,6 +343,14 @@ def _build_extraction_response(
             BankStatementData(
                 **extracted
             )
+        )
+
+    elif (
+        document.get("document_type")
+        == DocumentType.CHECK
+    ):
+        response.check_data = CheckData(
+            **extracted
         )
 
     return response

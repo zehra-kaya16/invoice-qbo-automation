@@ -1,10 +1,10 @@
 import base64
-import json
 import io
+import json
 from pathlib import Path
-from PIL import Image
+
 import pypdfium2 as pdfium
-from openai import OpenAI
+from PIL import Image
 
 from app.schemas.documents import (
     BankStatementData,
@@ -16,11 +16,41 @@ from app.schemas.documents import (
     ReceiptData,
 )
 
+
 class DocumentExtractor:
 
-    def __init__(self, api_key: str):
-        self.client = OpenAI(api_key=api_key)
-        self.model = "gpt-4o"
+    def __init__(
+        self,
+        api_key: str,
+        provider: str = "openai",
+    ):
+        self.api_key = api_key
+        self.provider = provider
+
+        if provider == "openai":
+            from openai import OpenAI
+
+            self.client = OpenAI(
+                api_key=api_key
+            )
+
+            self.model = "gpt-4o"
+
+        elif provider == "anthropic":
+            from anthropic import Anthropic
+
+            self.client = Anthropic(
+                api_key=api_key
+            )
+
+            self.model = (
+                "claude-3-5-sonnet-20241022"
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown provider: {provider}"
+            )
 
     def pdf_to_page_images(self, pdf_data: bytes) -> list[bytes]:
         pdf_document = pdfium.PdfDocument(pdf_data)
@@ -49,35 +79,85 @@ class DocumentExtractor:
 
         return page_images
 
-    def _vision_request(self, image_data: bytes, prompt: str) -> str:
-        image_base64 = base64.b64encode(image_data).decode("utf-8")
+    def _vision_request(
+        self,
+        image_data: bytes,
+        prompt: str,
+    ) -> str:
+        image_base64 = base64.b64encode(
+            image_data
+        ).decode("utf-8")
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
+        if self.provider == "openai":
+            response = (
+                self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
                         {
-                            "type": "text",
-                            "text": prompt,
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": (
-                                    "data:image/png;base64,"
-                                    + image_base64
-                                )
-                            },
-                        },
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": prompt,
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": (
+                                            "data:image/png;base64,"
+                                            + image_base64
+                                        )
+                                    },
+                                },
+                            ],
+                        }
                     ],
-                }
-            ],
-            max_tokens=4096,
-        )
+                    max_tokens=4096,
+                )
+            )
 
-        return response.choices[0].message.content or ""
+            return (
+                response.choices[0]
+                .message.content
+                or ""
+            )
+
+        if self.provider == "anthropic":
+            response = (
+                self.client.messages.create(
+                    model=self.model,
+                    max_tokens=4096,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": (
+                                            "image/png"
+                                        ),
+                                        "data": (
+                                            image_base64
+                                        ),
+                                    },
+                                },
+                                {
+                                    "type": "text",
+                                    "text": prompt,
+                                },
+                            ],
+                        }
+                    ],
+                )
+            )
+
+            return response.content[0].text
+
+        raise ValueError(
+            f"Unknown provider: {self.provider}"
+        )
 
     def _parse_json(self, response: str):
         cleaned = response.strip()

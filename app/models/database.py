@@ -4,20 +4,23 @@ Database models for Receipt AI.
 Uses SQLAlchemy for ORM with PostgreSQL.
 """
 
-from datetime import datetime
-from typing import Optional, List
-from decimal import Decimal
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
-    Column, String, Integer, Float, Boolean, DateTime,
-    ForeignKey, Text, Enum, JSON, Numeric
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
 )
-from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.dialects.postgresql import UUID
-
-from app.schemas.documents import DocumentType, ProcessingStatus
-
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 

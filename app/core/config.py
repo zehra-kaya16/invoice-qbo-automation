@@ -4,8 +4,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # OpenAI
+    # AI Extraction
     openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    ai_provider: Literal["openai", "anthropic"] = "openai"
+    ai_model: str = "gpt-4o"
 
     # Database
     database_url: Optional[str] = None
@@ -25,6 +28,13 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @property
+    def ai_api_key(self) -> Optional[str]:
+        if self.ai_provider == "openai":
+            return self.openai_api_key
+
+        return self.anthropic_api_key
 
 
 settings = Settings()

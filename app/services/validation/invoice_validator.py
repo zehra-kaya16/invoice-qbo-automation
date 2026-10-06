@@ -2,7 +2,6 @@ from decimal import Decimal
 
 from app.schemas.documents import ReceiptData
 
-
 MONEY_TOLERANCE = Decimal("0.01")
 
 

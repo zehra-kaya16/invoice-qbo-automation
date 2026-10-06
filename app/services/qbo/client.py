@@ -1,32 +1,32 @@
 import unicodedata
-from datetime import date as Date, datetime, timedelta
+from datetime import date as Date
+from datetime import datetime, timedelta
 from decimal import Decimal
-from quickbooks.objects.purchase import Purchase
-from quickbooks.objects import (
-    BillPayment,
-    Deposit,
-    Payment,
-    Transfer,
-)
-from typing import Optional, List
+from typing import List, Optional
 
 from intuitlib.client import AuthClient
 from intuitlib.enums import Scopes
 from quickbooks import QuickBooks
-from quickbooks.objects import CompanyInfo
-from quickbooks.objects.vendor import Vendor
-from quickbooks.objects.account import Account
-from quickbooks.objects.bill import Bill
-
-from quickbooks.objects.detailline import (
-    AccountBasedExpenseLine,
-    AccountBasedExpenseLineDetail,
+from quickbooks.objects import (
+    BillPayment,
+    CompanyInfo,
+    Deposit,
+    Payment,
+    Transfer,
 )
-
+from quickbooks.objects.account import Account
 from quickbooks.objects.attachable import (
     Attachable,
     AttachableRef,
 )
+from quickbooks.objects.bill import Bill
+from quickbooks.objects.detailline import (
+    AccountBasedExpenseLine,
+    AccountBasedExpenseLineDetail,
+)
+from quickbooks.objects.purchase import Purchase
+from quickbooks.objects.vendor import Vendor
+
 
 def _normalize_vendor_name(value: str) -> str:
     if not value:

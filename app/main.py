@@ -2,7 +2,6 @@ from fastapi import FastAPI
 
 from app.api import documents, health, qbo
 
-
 app = FastAPI(
     title="Invoice QBO Automation",
     description="Invoice processing and QuickBooks Online integration",

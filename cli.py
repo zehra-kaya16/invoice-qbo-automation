@@ -14,20 +14,31 @@ load_dotenv()
 
 
 def get_extractor():
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = (
+        os.getenv("OPENAI_API_KEY")
+        or os.getenv("ANTHROPIC_API_KEY")
+    )
 
     if not api_key:
         print(
-            "Error: OPENAI_API_KEY environment variable is not set."
+            "Error: Set OPENAI_API_KEY or "
+            "ANTHROPIC_API_KEY environment variable."
         )
         sys.exit(1)
+
+    provider = (
+        "openai"
+        if os.getenv("OPENAI_API_KEY")
+        else "anthropic"
+    )
 
     from app.services.extraction.extractor import (
         DocumentExtractor,
     )
 
     return DocumentExtractor(
-        api_key=api_key
+        api_key=api_key,
+        provider=provider,
     )
 
 

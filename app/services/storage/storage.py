@@ -6,10 +6,10 @@ Supports local filesystem, S3, and Cloudflare R2.
 
 import os
 import uuid
-from pathlib import Path
-from typing import Optional, BinaryIO
-from datetime import datetime
 from abc import ABC, abstractmethod
+from datetime import datetime
+from pathlib import Path
+from typing import BinaryIO
 
 import boto3
 from botocore.exceptions import ClientError
@@ -26,17 +26,14 @@ class StorageBackend(ABC):
         content_type: str,
     ) -> str:
         """Upload file and return URL/path."""
-        pass
 
     @abstractmethod
     def download(self, key: str) -> bytes:
         """Download file content."""
-        pass
 
     @abstractmethod
     def delete(self, key: str) -> bool:
         """Delete file."""
-        pass
 
     @abstractmethod
     def get_url(
@@ -45,7 +42,6 @@ class StorageBackend(ABC):
         expires_in: int = 3600,
     ) -> str:
         """Get URL for file access."""
-        pass
 
 
 class LocalStorage(StorageBackend):

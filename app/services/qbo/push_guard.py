@@ -3,7 +3,6 @@ from app.schemas.documents import (
     ProcessingStatus,
 )
 
-
 QBO_PUSH_NOT_STARTED = "not_started"
 QBO_PUSH_IN_PROGRESS = "in_progress"
 QBO_PUSH_SUCCEEDED = "succeeded"

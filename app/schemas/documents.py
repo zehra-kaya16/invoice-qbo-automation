@@ -1,9 +1,10 @@
 from datetime import date as Date
 from decimal import Decimal
 from enum import Enum
-from typing import Optional, List, Literal
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, field_validator, Field
+from pydantic import BaseModel, Field, field_validator
+
 
 class DocumentType(str, Enum):
     RECEIPT = "receipt"

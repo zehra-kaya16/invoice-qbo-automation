@@ -3,7 +3,6 @@ from decimal import Decimal
 from difflib import SequenceMatcher
 from typing import Optional
 
-
 MATCH_THRESHOLD = 70
 
 
