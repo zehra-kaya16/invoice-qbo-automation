@@ -99,3 +99,73 @@ def test_match_to_qbo_blocked_after_document_pushed():
         "Document already pushed to QBO; "
         "rematching is not allowed."
     )
+
+def test_extraction_blocked_after_document_pushed(monkeypatch):
+    from copy import deepcopy
+    from app.api import documents as documents_api
+
+    document_id = seed_pushed_bank_statement()
+    before = deepcopy(documents_db[document_id])
+
+    async def unexpected_processing(document_id):
+        raise AssertionError("Extraction must not start")
+
+    monkeypatch.setattr(
+        documents_api,
+        "process_document",
+        unexpected_processing,
+    )
+
+    response = client.post(
+        f"/api/documents/{document_id}/extract"
+    )
+
+    assert response.status_code == 409
+    assert documents_db[document_id] == before
+
+
+def test_extraction_blocked_for_protected_qbo_push_states(monkeypatch):
+    from copy import deepcopy
+    from app.api import documents as documents_api
+
+    async def unexpected_processing(document_id):
+        raise AssertionError("Extraction must not start")
+
+    monkeypatch.setattr(
+        documents_api,
+        "process_document",
+        unexpected_processing,
+    )
+
+    for push_state in ("in_progress", "succeeded", "uncertain"):
+        document_id = seed_pushed_bank_statement()
+        document = documents_db[document_id]
+        document["status"] = ProcessingStatus.EXTRACTED
+        document["qbo_push_state"] = push_state
+
+        before = deepcopy(document)
+
+        response = client.post(
+            f"/api/documents/{document_id}/extract"
+        )
+
+        assert response.status_code == 409, push_state
+        assert documents_db[document_id] == before, push_state
+
+
+def test_direct_processing_blocked_after_document_pushed():
+    import asyncio
+    from copy import deepcopy
+
+    import pytest
+    from fastapi import HTTPException
+    from app.api.documents import process_document
+
+    document_id = seed_pushed_bank_statement()
+    before = deepcopy(documents_db[document_id])
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(process_document(document_id))
+
+    assert exc.value.status_code == 409
+    assert documents_db[document_id] == before

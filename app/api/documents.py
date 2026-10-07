@@ -40,6 +40,20 @@ router = APIRouter()
 
 documents_db = {} # Geçici belge veri tabanı
 
+def _ensure_document_can_be_extracted(document: dict) -> None:
+    if (
+        document.get("status") == ProcessingStatus.PUSHED
+        or document.get("qbo_push_state")
+        in {"in_progress", "succeeded", "uncertain"}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Document cannot be extracted while its QBO push "
+                "is in progress, completed, or uncertain."
+            ),
+        )
+
 class DocumentStatus(BaseModel):
     id: str
     filename: str
@@ -187,6 +201,8 @@ async def extract_document(document_id: str):
 
     document = documents_db[document_id]
 
+    _ensure_document_can_be_extracted(document)
+
     if document["status"] == ProcessingStatus.EXTRACTED:
         return _build_extraction_response(document)
 
@@ -202,6 +218,8 @@ async def process_document(document_id: str):
         return
 
     document = documents_db[document_id]
+
+    _ensure_document_can_be_extracted(document)
 
     try:
         document["status"] = ProcessingStatus.CLASSIFYING
