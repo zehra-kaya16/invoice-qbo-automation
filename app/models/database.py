@@ -15,6 +15,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -117,6 +118,14 @@ class Document(Base):
     content_type = Column(String(100))
     file_size = Column(Integer)
     storage_key = Column(String(500))  # S3/R2 path
+
+    # Runtime workflow persistence. API identifiers remain doc_... .
+    api_id = Column(String(100), unique=True, nullable=True)
+    workflow_state = Column(JSON, nullable=True)
+    source_content = Column(LargeBinary, nullable=True)
+    revision = Column(Integer, nullable=False, default=1, server_default="1")
+
+    __mapper_args__ = {"version_id_col": revision}
     
     # Processing
     document_type = Column(String(50))  # receipt, invoice, bank_statement, check
