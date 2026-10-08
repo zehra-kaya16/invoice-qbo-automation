@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app.api.documents import documents_db
+from tests.persistence_helpers import documents_db
 from app.main import app
 from app.schemas.documents import DocumentType, ProcessingStatus
 

@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app.api.documents import documents_db
+from tests.persistence_helpers import documents_db
 from app.main import app
 from app.schemas.documents import DocumentType, ProcessingStatus
 
@@ -142,6 +142,7 @@ def test_extraction_blocked_for_protected_qbo_push_states(monkeypatch):
         document = documents_db[document_id]
         document["status"] = ProcessingStatus.EXTRACTED
         document["qbo_push_state"] = push_state
+        documents_db[document_id] = document
 
         before = deepcopy(document)
 

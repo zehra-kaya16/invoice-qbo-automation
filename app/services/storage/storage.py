@@ -7,7 +7,7 @@ Supports local filesystem, S3, and Cloudflare R2.
 import os
 import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
@@ -278,7 +278,7 @@ class DocumentStorage:
         company_id: str = "default",
         document_type: str = "document",
     ) -> dict:
-        timestamp = datetime.utcnow().strftime(
+        timestamp = datetime.now(UTC).strftime(
             "%Y/%m/%d"
         )
 
@@ -306,7 +306,7 @@ class DocumentStorage:
             "company_id": company_id,
             "document_type": document_type,
             "uploaded_at": (
-                datetime.utcnow().isoformat()
+                datetime.now(UTC).isoformat()
             ),
         }
 
@@ -318,7 +318,7 @@ class DocumentStorage:
     ) -> dict:
         import io
 
-        timestamp = datetime.utcnow().strftime(
+        timestamp = datetime.now(UTC).strftime(
             "%Y/%m/%d"
         )
 

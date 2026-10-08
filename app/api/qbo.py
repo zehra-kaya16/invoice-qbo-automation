@@ -308,26 +308,19 @@ async def get_invoice_qbo_options(
     """
 
     # Lazy import prevents API-module import cycles
-    # while documents are still stored in-memory.
-    from app.api.documents import documents_db
+    from app.api.documents import _load_document
 
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    doc = documents_db[document_id]
+    doc = _load_document(document_id)
 
     if (
         doc.get("document_type")
-        != DocumentType.INVOICE
+        not in (DocumentType.INVOICE, DocumentType.RECEIPT)
     ):
         raise HTTPException(
             status_code=400,
             detail=(
                 "QBO invoice options are available "
-                "only for invoices"
+                "only for invoices and receipts"
             ),
         )
 
@@ -343,7 +336,7 @@ async def get_invoice_qbo_options(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Invoice must be approved before "
+                "Invoice/receipt must be approved before "
                 "QBO mapping"
             ),
         )
@@ -438,25 +431,19 @@ async def build_invoice_qbo_plan(
     This endpoint does NOT write to QBO.
     """
 
-    from app.api.documents import documents_db
+    from app.api.documents import _load_document
 
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    doc = documents_db[document_id]
+    doc = _load_document(document_id)
 
     if (
         doc.get("document_type")
-        != DocumentType.INVOICE
+        not in (DocumentType.INVOICE, DocumentType.RECEIPT)
     ):
         raise HTTPException(
             status_code=400,
             detail=(
                 "QBO invoice planning is available "
-                "only for invoices"
+                "only for invoices and receipts"
             ),
         )
 
@@ -482,7 +469,7 @@ async def build_invoice_qbo_plan(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Invoice must be approved before "
+                "Invoice/receipt must be approved before "
                 "QBO mapping"
             ),
         )

@@ -47,7 +47,7 @@ def ensure_invoice_can_start_push(
     document: dict,
 ) -> None:
     """
-    Verify that an invoice is allowed to begin a QBO write.
+    Verify that an invoice or receipt is allowed to begin a QBO write.
 
     This function does not call QuickBooks
     and does not change document state.
@@ -57,20 +57,20 @@ def ensure_invoice_can_start_push(
 
     if (
         document.get("document_type")
-        != DocumentType.INVOICE
+        not in (DocumentType.INVOICE, DocumentType.RECEIPT)
     ):
         raise QBOPushGuardError(
-            "QBO invoice push is available only for invoices"
+            "QBO invoice push is available only for invoices and receipts"
         )
 
     if not document.get("extracted_data"):
         raise QBOPushGuardError(
-            "Invoice has no extracted data"
+            "Invoice/receipt has no extracted data"
         )
 
     if not document.get("approved", False):
         raise QBOPushGuardError(
-            "Invoice must be approved before QBO push"
+            "Invoice/receipt must be approved before QBO push"
         )
 
     validation = document.get("validation")
@@ -80,7 +80,7 @@ def ensure_invoice_can_start_push(
         or not validation.get("is_valid", False)
     ):
         raise QBOPushGuardError(
-            "Invoice must have valid validation before QBO push"
+            "Invoice/receipt must have valid validation before QBO push"
         )
 
     if (
@@ -89,7 +89,7 @@ def ensure_invoice_can_start_push(
         or document.get("qbo_transaction_id")
     ):
         raise QBOPushGuardError(
-            "Invoice has already been pushed to QBO"
+            "Invoice/receipt has already been pushed to QBO"
         )
 
     push_state = document.get(
@@ -103,7 +103,7 @@ def ensure_invoice_can_start_push(
 
     if push_state == QBO_PUSH_SUCCEEDED:
         raise QBOPushGuardError(
-            "Invoice has already been pushed to QBO"
+            "Invoice/receipt has already been pushed to QBO"
         )
 
     if push_state == QBO_PUSH_UNCERTAIN:

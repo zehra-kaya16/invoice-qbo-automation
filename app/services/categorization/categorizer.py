@@ -72,6 +72,25 @@ class TransactionCategorizer:
         if not search_text.strip():
             return None
 
+        if vendor_name:
+            normalized_vendor = vendor_name.strip().lower()
+
+            vendor_category_map = {
+                "books by bessie": "Dues & Subscriptions",
+            }
+
+            mapped_category = vendor_category_map.get(
+                normalized_vendor
+            )
+
+            if mapped_category:
+                for candidate in candidates:
+                    if (
+                        candidate["name"].lower()
+                        == mapped_category.lower()
+                    ):
+                        return candidate
+
         for candidate in candidates:
             account_name = candidate["name"].lower()
 

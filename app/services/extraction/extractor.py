@@ -79,85 +79,54 @@ class DocumentExtractor:
 
         return page_images
 
-    def _vision_request(
-        self,
-        image_data: bytes,
-        prompt: str,
-    ) -> str:
-        image_base64 = base64.b64encode(
-            image_data
-        ).decode("utf-8")
+    def _vision_request(self, image_data: bytes, prompt: str) -> str:
+        return self._vision_request_pages([image_data], prompt)
 
+    def _vision_request_pages(self, page_images: list[bytes], prompt: str) -> str:
+        if not page_images or any(
+            not isinstance(page, bytes) or not page for page in page_images
+        ):
+            raise ValueError("At least one non-empty page image is required")
+
+        encoded = [base64.b64encode(page).decode("utf-8") for page in page_images]
         if self.provider == "openai":
-            response = (
-                self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": prompt,
-                                },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": (
-                                            "data:image/png;base64,"
-                                            + image_base64
-                                        )
-                                    },
-                                },
-                            ],
-                        }
-                    ],
-                    max_tokens=4096,
-                )
+            content = [{"type": "text", "text": prompt}]
+            for index, page in enumerate(encoded, start=1):
+                content.extend([
+                    {"type": "text", "text": f"Page {index} of {len(encoded)}"},
+                    {"type": "image_url", "image_url": {
+                        "url": "data:image/png;base64," + page,
+                    }},
+                ])
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=4096,
             )
-
-            return (
-                response.choices[0]
-                .message.content
-                or ""
-            )
+            choice = response.choices[0]
+            if getattr(choice, "finish_reason", None) == "length":
+                raise ValueError("Extraction response was truncated; document was not extracted")
+            return choice.message.content or ""
 
         if self.provider == "anthropic":
-            response = (
-                self.client.messages.create(
-                    model=self.model,
-                    max_tokens=4096,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": (
-                                            "image/png"
-                                        ),
-                                        "data": (
-                                            image_base64
-                                        ),
-                                    },
-                                },
-                                {
-                                    "type": "text",
-                                    "text": prompt,
-                                },
-                            ],
-                        }
-                    ],
-                )
+            content = [{"type": "text", "text": prompt}]
+            for index, page in enumerate(encoded, start=1):
+                content.extend([
+                    {"type": "text", "text": f"Page {index} of {len(encoded)}"},
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": "image/png", "data": page,
+                    }},
+                ])
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": content}],
             )
-
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                raise ValueError("Extraction response was truncated; document was not extracted")
             return response.content[0].text
 
-        raise ValueError(
-            f"Unknown provider: {self.provider}"
-        )
+        raise ValueError(f"Unknown provider: {self.provider}")
 
     def _parse_json(self, response: str):
         cleaned = response.strip()
@@ -208,9 +177,17 @@ class DocumentExtractor:
             DocumentType.UNKNOWN,
         )
 
-    def extract_receipt(self, image_data: bytes) -> ReceiptData:
+    def extract_receipt(self, image_data: bytes | list[bytes]) -> ReceiptData:
         prompt = """
-        Extract the information visible in this receipt or invoice.
+        Extract ONE receipt or invoice from all supplied pages in their order.
+        These are pages of the same document, not separate transactions.
+        Return one document-level result and include line items from every page.
+        Use the final document grand total. Do not sum repeated totals,
+        page subtotals, carried-forward balances, or repeated header/footer data.
+        Do not duplicate a line item repeated only as a carry-forward summary.
+        If the pages contain different receipts/invoices, return
+        {"error": "Multiple independent documents must be uploaded separately"}.
+        Do not invent missing fields.
 
         Return only a valid JSON object with these fields:
 
@@ -253,12 +230,16 @@ class DocumentExtractor:
         Do not add explanations outside the JSON.
         """
 
-        response = self._vision_request(
-            image_data,
-            prompt,
-        )
+        if isinstance(image_data, bytes):
+            response = self._vision_request(image_data, prompt)
+        else:
+            response = self._vision_request_pages(image_data, prompt)
 
         data = self._parse_json(response)
+        if not isinstance(data, dict) or not data:
+            raise ValueError("Receipt/invoice extraction did not return a valid JSON object")
+        if data.get("error"):
+            raise ValueError(str(data["error"]))
 
         line_items = [
             LineItem(**item)

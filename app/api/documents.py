@@ -6,6 +6,12 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.services.persistence.repository import (
+    DocumentConflictError,
+    DocumentRepository,
+)
 
 from app.schemas.documents import (
     BankMatchReviewRequest,
@@ -38,7 +44,48 @@ from app.services.validation.invoice_validator import validate_invoice
 
 router = APIRouter()
 
-documents_db = {} # Geçici belge veri tabanı
+document_repository = DocumentRepository()
+
+
+def _load_document(document_id: str) -> dict:
+    try:
+        document = document_repository.get(document_id)
+    except SQLAlchemyError as exc:
+        raise HTTPException(503, "Document database is unavailable") from exc
+    if document is None:
+        raise HTTPException(404, "Document not found")
+    return document
+
+
+def _save_document(document: dict) -> None:
+    try:
+        document_repository.save(document)
+    except DocumentConflictError as exc:
+        raise HTTPException(
+            409, "Document changed; reload before trying again"
+        ) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(503, "Document database is unavailable") from exc
+
+
+def _ensure_workflow_editable(document: dict) -> None:
+    protected = document.get("qbo_push_state") in {
+        "in_progress", "succeeded", "uncertain"
+    }
+    protected = protected or document.get("status") == ProcessingStatus.PUSHED
+    protected = protected or any(
+        item.get("qbo_category_push_status") in {"pushing", "pushed", "uncertain"}
+        for item in document.get("category_suggestions", [])
+    )
+    protected = protected or any(
+        item.get("attachment_id")
+        or item.get("attachment_push_status") in {"uploading", "uncertain"}
+        for item in document.get("check_match_results", [])
+    )
+    if protected:
+        raise HTTPException(
+            409, "Workflow cannot be changed after a QBO write has started"
+        )
 
 def _ensure_document_can_be_extracted(document: dict) -> None:
     if (
@@ -53,6 +100,7 @@ def _ensure_document_can_be_extracted(document: dict) -> None:
                 "is in progress, completed, or uncertain."
             ),
         )
+    _ensure_workflow_editable(document)
 
 class DocumentStatus(BaseModel):
     id: str
@@ -128,9 +176,9 @@ async def upload_document(
 
         content = await file.read()
 
-        documents_db[document_id] = {
+        document = {
             "id": document_id,
-            "filename": file.filename,
+            "filename": file.filename or "unknown",
             "content_type": content_type,
             "content": content,
             "company_id": company_id,
@@ -143,7 +191,8 @@ async def upload_document(
             "qbo_transaction_id": None,
             "qbo_transaction_type": None,
             "qbo_push_error": None,
-        }  
+        }
+        _save_document(document)
         if auto_process and background_tasks:
             background_tasks.add_task(
                 process_document,
@@ -164,13 +213,7 @@ async def upload_document(
 
 @router.get("/{document_id}", response_model=DocumentStatus)
 async def get_document(document_id: str):
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     return DocumentStatus(
         id=document["id"],
@@ -193,13 +236,7 @@ async def get_document(document_id: str):
 )
 async def extract_document(document_id: str):
 
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     _ensure_document_can_be_extracted(document)
 
@@ -208,21 +245,19 @@ async def extract_document(document_id: str):
 
     await process_document(document_id)
 
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     return _build_extraction_response(document)
 
 async def process_document(document_id: str):
 
-    if document_id not in documents_db:
-        return
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     _ensure_document_can_be_extracted(document)
 
     try:
         document["status"] = ProcessingStatus.CLASSIFYING
+        _save_document(document)
 
         api_key = (
             os.getenv("OPENAI_API_KEY")
@@ -281,18 +316,11 @@ async def process_document(document_id: str):
             DocumentType.RECEIPT,
             DocumentType.INVOICE,
         ):
-            if len(page_images) > 1:
-                raise ValueError(
-                    "Multi-page receipt/invoice PDF extraction "
-                    "is not implemented yet."
-                )
-
             extracted = extractor.extract_receipt(
-                page_images[0]
+                page_images[0] if len(page_images) == 1 else page_images
             )
 
-            if document_type == DocumentType.INVOICE:
-                document["validation"] = validate_invoice(extracted)
+            document["validation"] = validate_invoice(extracted)
 
             document["extracted_data"] = (
                 extracted.model_dump()
@@ -324,9 +352,13 @@ async def process_document(document_id: str):
 
         document["status"] = ProcessingStatus.EXTRACTED
 
+    except HTTPException:
+        raise
     except Exception as exc:
         document["status"] = ProcessingStatus.FAILED
         document["error"] = str(exc)
+    finally:
+        _save_document(document)
 
 def _build_extraction_response(
     document: dict,
@@ -380,13 +412,7 @@ def _build_extraction_response(
 )
 async def get_extracted_data(document_id: str):
 
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     if document["status"] not in [
         ProcessingStatus.EXTRACTED,
@@ -409,21 +435,15 @@ async def update_extracted_data(
     receipt_data: ReceiptData,
 ):
     """
-    Update reviewed invoice fields and re-run validation.
+    Update reviewed invoice or receipt fields and re-run validation.
     """
 
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
+    doc = _load_document(document_id)
 
-    doc = documents_db[document_id]
-
-    if doc.get("document_type") != DocumentType.INVOICE:
+    if doc.get("document_type") not in (DocumentType.INVOICE, DocumentType.RECEIPT):
         raise HTTPException(
             status_code=400,
-            detail="Review editing is currently available only for invoices",
+            detail="Review editing is currently available only for invoices and receipts",
         )
 
     if doc.get("status") != ProcessingStatus.EXTRACTED:
@@ -442,6 +462,8 @@ async def update_extracted_data(
         )
 
     # Only fields actually sent by the user are treated as updates.
+    _ensure_workflow_editable(doc)
+
     updates = receipt_data.model_dump(
         exclude_unset=True,
     )
@@ -470,26 +492,22 @@ async def update_extracted_data(
     )
 
     doc["approved"] = False
+    _save_document(doc)
+
     return _build_extraction_response(doc)
 
 @router.post("/{document_id}/approve", response_model=ExtractionResponse)
 async def approve_document(document_id: str):
     """
-    Approve a reviewed and valid invoice.
+    Approve a reviewed and valid invoice or receipt.
     """
 
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
+    doc = _load_document(document_id)
 
-    doc = documents_db[document_id]
-
-    if doc.get("document_type") != DocumentType.INVOICE:
+    if doc.get("document_type") not in (DocumentType.INVOICE, DocumentType.RECEIPT):
         raise HTTPException(
             status_code=400,
-            detail="Approval is currently available only for invoices",
+            detail="Approval is currently available only for invoices and receipts",
         )
 
     if doc.get("status") != ProcessingStatus.EXTRACTED:
@@ -507,46 +525,75 @@ async def approve_document(document_id: str):
             detail="Document has no extracted data to approve",
         )
 
+    _ensure_workflow_editable(doc)
+
     validation = doc.get("validation")
 
     if validation is None:
         raise HTTPException(
             status_code=400,
-            detail="Invoice has not been validated",
+            detail="Invoice/receipt has not been validated",
         )
 
     if not validation.get("is_valid", False):
         raise HTTPException(
             status_code=400,
-            detail="Invoice cannot be approved because validation failed",
+            detail="Invoice/receipt cannot be approved because validation failed",
         )
 
     doc["approved"] = True
 
+    _save_document(doc)
+
     return _build_extraction_response(doc)
+
+def _validate_bank_statement_check_results(document: dict) -> list[dict]:
+    results = document.get("check_match_results")
+    if results is None:
+        raise HTTPException(
+            400, "Check matching has not been completed. Run match-to-qbo first."
+        )
+    if not isinstance(results, list) or any(
+        not isinstance(item, dict) for item in results
+    ):
+        raise HTTPException(400, "Invalid check match results")
+
+    extracted = document.get("extracted_data") or {}
+    images = extracted.get("check_images")
+    if not isinstance(images, list) or any(
+        not isinstance(image, dict) for image in images
+    ):
+        raise HTTPException(400, "Extracted check image data is missing or invalid")
+    if len(results) != len(images):
+        raise HTTPException(
+            400, "Check match results do not cover all extracted check images"
+        )
+
+    # match-to-qbo creates one result per image with its original index/path.
+    if any(type(item.get("check_index")) is not int for item in results):
+        raise HTTPException(400, "Invalid check match indexes")
+    by_index = {item["check_index"]: item for item in results}
+    if len(by_index) != len(results):
+        raise HTTPException(400, "Duplicate check match indexes")
+    for index, image in enumerate(images):
+        result = by_index.get(index)
+        if (
+            result is None
+            or not image.get("image_path")
+            or result.get("image_path") != image["image_path"]
+        ):
+            raise HTTPException(400, "Check image and match result do not agree")
+    return results
+
 
 def _push_bank_statement_checks(
     document_id: str,
     document: dict,
     client,
+    persist=None,
 ) -> PushToQBOResponse:
 
-    check_results = (
-        document.get(
-            "check_match_results"
-        )
-        or []
-    )
-
-    if not check_results:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Bank statement has no "
-                "check match results. "
-                "Run match-to-qbo first."
-            ),
-        )
+    check_results = _validate_bank_statement_check_results(document)
 
     eligible_checks = [
         item
@@ -560,6 +607,9 @@ def _push_bank_statement_checks(
     # check-related transaction was rejected.
     if not eligible_checks:
         document["status"] = ProcessingStatus.PUSHED
+
+        if persist is not None:
+            persist(document)
 
         return PushToQBOResponse(
             id=document_id,
@@ -579,6 +629,11 @@ def _push_bank_statement_checks(
         # do not create a duplicate attachment.
         if item.get("attachment_id"):
             continue
+
+        if item.get("attachment_push_status") in {"uploading", "uncertain"}:
+            raise HTTPException(
+                409, "Previous check attachment outcome needs manual verification"
+            )
 
         image_path = item.get(
             "image_path"
@@ -654,6 +709,10 @@ def _push_bank_statement_checks(
             errors.append(message)
             continue
 
+        item["attachment_push_status"] = "uploading"
+        if persist is not None:
+            persist(document)
+
         try:
             result = client.upload_attachment(
                 file_path=str(path),
@@ -665,15 +724,23 @@ def _push_bank_statement_checks(
                 ),
             )
 
+            if not result.get("id"):
+                raise RuntimeError("QBO attachment returned no ID")
+
+            item["attachment_push_status"] = "uploaded"
             item["attachment_id"] = (
                 result["id"]
             )
 
             item["attachment_error"] = None
 
+            if persist is not None:
+                persist(document)
+
             attachments_uploaded += 1
 
         except Exception as exc:
+            item["attachment_push_status"] = "uncertain"
             message = (
                 f"{path.name}: {exc}"
             )
@@ -681,6 +748,9 @@ def _push_bank_statement_checks(
             item["attachment_error"] = (
                 message
             )
+
+            if persist is not None:
+                persist(document)
 
             errors.append(
                 message
@@ -699,6 +769,9 @@ def _push_bank_statement_checks(
         document["status"] = (
             ProcessingStatus.PUSHED
         )
+
+    if persist is not None:
+        persist(document)
 
     return PushToQBOResponse(
         id=document_id,
@@ -924,6 +997,7 @@ def _prepare_reviewed_bank_statement_categories(
 def _push_bank_statement_categories(
     document: dict,
     client,
+    persist=None,
 ) -> dict:
     category_updates = (
         _prepare_reviewed_bank_statement_categories(
@@ -1074,6 +1148,9 @@ def _push_bank_statement_categories(
             "qbo_category_push_error"
         ] = None
 
+        if persist is not None:
+            persist(document)
+
         try:
             result = (
                 client.update_purchase_category(
@@ -1099,6 +1176,9 @@ def _push_bank_statement_categories(
             selected_category[
                 "qbo_category_push_error"
             ] = None
+
+            if persist is not None:
+                persist(document)
 
             updated_count += 1
 
@@ -1132,6 +1212,9 @@ def _push_bank_statement_categories(
             selected_category[
                 "qbo_category_push_error"
             ] = str(exc)
+
+            if persist is not None:
+                persist(document)
 
             errors.append(
                 {
@@ -1172,6 +1255,9 @@ def _push_bank_statement_categories(
     document[
         "category_push_results"
     ] = results
+
+    if persist is not None:
+        persist(document)
 
     return {
         "updated_count": updated_count,
@@ -1316,10 +1402,15 @@ def _prepare_reviewed_bank_statement_matches(
             },
         )
 
-    check_match_results = document.get(
-        "check_match_results",
-        [],
-    )
+    check_match_results = document.get("check_match_results")
+    if check_match_results is None:
+        raise HTTPException(
+            400, "Check matching has not been completed. Run match-to-qbo first."
+        )
+    elif not isinstance(check_match_results, list) or any(
+        not isinstance(item, dict) for item in check_match_results
+    ):
+        raise HTTPException(400, "Invalid check match results")
 
     for check_match in check_match_results:
         transaction_index = check_match.get(
@@ -1422,9 +1513,7 @@ def _prepare_reviewed_bank_statement_matches(
             "qbo_transaction_type"
         ] = qbo_transaction_type
 
-    document[
-        "check_match_results"
-    ] = check_match_results
+    document["check_match_results"] = check_match_results
 
 @router.post(
     "/{document_id}/push-to-qbo",
@@ -1435,24 +1524,19 @@ async def push_to_qbo(
     document_id: str,
     request: PushToQBORequest,
 ):
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
     document_type = document.get("document_type")
 
     if document_type == DocumentType.BANK_STATEMENT:
-        if not request.attach_documents:
+        has_check_images = bool(
+            (document.get("extracted_data") or {}).get("check_images")
+        )
+        if has_check_images and not request.attach_documents:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Bank statement QBO push "
-                    "currently performs matched "
-                    "check attachments, so "
-                    "attach_documents must be true"
+                    "attach_documents must be true when the "
+                    "bank statement contains check images"
                 ),
             )
 
@@ -1472,11 +1556,17 @@ async def push_to_qbo(
             document
         )
 
+        # An empty list is valid only when extraction detected no checks.
+        # Missing or incomplete check results must fail before category writes.
+        _validate_bank_statement_check_results(document)
+        _save_document(document)
+
         # 3. Category review + QBO category write
         category_push_result = (
             _push_bank_statement_categories(
                 document=document,
                 client=client,
+                persist=_save_document,
             )
         )
 
@@ -1504,6 +1594,7 @@ async def push_to_qbo(
             document_id=document_id,
             document=document,
             client=client,
+            persist=_save_document,
         )
 
         return PushToQBOResponse(
@@ -1530,26 +1621,26 @@ async def push_to_qbo(
             errors=check_push_result.errors,
         )
 
-    if document_type != DocumentType.INVOICE:
+    if document_type not in (DocumentType.INVOICE, DocumentType.RECEIPT):
         raise HTTPException(
             status_code=400,
             detail=(
                 "This QBO push flow supports "
-                "invoices and matched "
-                "bank-statement checks"
+                "invoices, receipts and reviewed "
+                "bank statements"
             ),
         )
 
     if not document.get("extracted_data"):
         raise HTTPException(
             status_code=400,
-            detail="Invoice has no extracted data",
+            detail="Invoice/receipt has no extracted data",
         )
 
     if not document.get("approved"):
         raise HTTPException(
             status_code=400,
-            detail="Invoice must be approved before it can be pushed to QBO",
+            detail="Invoice/receipt must be approved before it can be pushed to QBO",
         )
 
     # Push state alanlarını garanti altına al.
@@ -1569,7 +1660,7 @@ async def push_to_qbo(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Invoice must be in extracted state before QBO push. "
+                "Invoice/receipt must be in extracted state before QBO push. "
                 f"Current status: {document.get('status')}"
             ),
         )
@@ -1588,7 +1679,7 @@ async def push_to_qbo(
             status_code=400,
             detail=(
                 "vendor_id is required "
-                "for invoice QBO push"
+                "for invoice/receipt QBO push"
             ),
         )
 
@@ -1597,7 +1688,7 @@ async def push_to_qbo(
             status_code=400,
             detail=(
                 "account_id is required "
-                "for invoice QBO push"
+                "for invoice/receipt QBO push"
             ),
         )
 
@@ -1676,7 +1767,7 @@ async def push_to_qbo(
     except Exception as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid extracted invoice data: {exc}",
+            detail=f"Invalid extracted invoice/receipt data: {exc}",
         ) from exc
 
     # ---------------------------------------------------------
@@ -1704,6 +1795,7 @@ async def push_to_qbo(
     # Bundan önce QBO'ya hiçbir write yapılmadı.
     # Şimdi external write başlamak üzere.
     mark_invoice_push_started(document)
+    _save_document(document)
 
     try:
         # ---------------------------------------------
@@ -1749,78 +1841,7 @@ async def push_to_qbo(
             transaction_id=transaction_id,
             transaction_type=transaction_type,
         )
-        if request.attach_documents:
-            temp_path = None
-
-            try:
-                filename = (
-                    document.get("filename")
-                    or f"{document_id}.bin"
-                )
-
-                content_type = (
-                    document.get("content_type")
-                    or "application/octet-stream"
-                )
-
-                file_content = document.get("content")
-
-                if not file_content:
-                    raise ValueError(
-                        "Original document content is missing"
-                    )
-
-                suffix = Path(filename).suffix
-
-                with tempfile.NamedTemporaryFile(
-                    delete=False,
-                    suffix=suffix,
-                ) as temp_file:
-                    temp_file.write(file_content)
-                    temp_path = temp_file.name
-
-                if transaction_type == "bill":
-                    entity_type = "Bill"
-
-                elif transaction_type == "expense":
-                    entity_type = "Purchase"
-
-                else:
-                    raise ValueError(
-                        "Unsupported QBO transaction type "
-                        f"for attachment: {transaction_type}"
-                    )
-
-                attachment_result = client.upload_attachment(
-                    file_path=temp_path,
-                    file_name=filename,
-                    content_type=content_type,
-                    entity_type=entity_type,
-                    entity_id=transaction_id,
-                )
-
-                document["qbo_attachment_id"] = (
-                    attachment_result["id"]
-                )
-
-                document["qbo_attachment_error"] = None
-
-                attachments_uploaded = 1
-
-            except Exception as exc:
-                document["qbo_attachment_error"] = str(exc)
-
-                response_errors.append(
-                    "Transaction was created successfully, "
-                    f"but attachment upload failed: {exc}"
-                )
-
-            finally:
-                if (
-                    temp_path
-                    and os.path.exists(temp_path)
-                ):
-                    os.remove(temp_path)
+        _save_document(document)
 
     except Exception as exc:
         # External write başladıktan sonra oluşan hata için
@@ -1829,6 +1850,7 @@ async def push_to_qbo(
             document=document,
             error=str(exc),
         )
+        _save_document(document)
 
         raise HTTPException(
             status_code=502,
@@ -1838,6 +1860,90 @@ async def push_to_qbo(
                 "Check QuickBooks Online before trying again."
             ),
         ) from exc
+
+    if request.attach_documents:
+        temp_path = None
+
+        try:
+            filename = (
+                document.get("filename")
+                or f"{document_id}.bin"
+            )
+
+            content_type = (
+                document.get("content_type")
+                or "application/octet-stream"
+            )
+
+            file_content = document.get("content")
+
+            if not file_content:
+                raise ValueError(
+                    "Original document content is missing"
+                )
+
+            suffix = Path(filename).suffix
+
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=suffix,
+            ) as temp_file:
+                temp_file.write(file_content)
+                temp_path = temp_file.name
+
+            if transaction_type == "bill":
+                entity_type = "Bill"
+
+            elif transaction_type == "expense":
+                entity_type = "Purchase"
+
+            else:
+                raise ValueError(
+                    "Unsupported QBO transaction type "
+                    f"for attachment: {transaction_type}"
+                )
+
+            document["qbo_attachment_push_status"] = "uploading"
+            _save_document(document)
+
+            attachment_result = client.upload_attachment(
+                file_path=temp_path,
+                file_name=filename,
+                content_type=content_type,
+                entity_type=entity_type,
+                entity_id=transaction_id,
+            )
+
+            if not attachment_result.get("id"):
+                raise RuntimeError("QBO attachment returned no ID")
+            document["qbo_attachment_push_status"] = "uploaded"
+            document["qbo_attachment_id"] = (
+                attachment_result["id"]
+            )
+
+            document["qbo_attachment_error"] = None
+
+            _save_document(document)
+            attachments_uploaded = 1
+
+        except Exception as exc:
+            if document.get("qbo_attachment_push_status") == "uploading":
+                document["qbo_attachment_push_status"] = "uncertain"
+            document["qbo_attachment_error"] = str(exc)
+            _save_document(document)
+
+            response_errors.append(
+                "Transaction was created successfully, "
+                f"but attachment upload failed: {exc}"
+            )
+
+        finally:
+            if (
+                temp_path
+                and os.path.exists(temp_path)
+            ):
+                os.remove(temp_path)
+
 
     return PushToQBOResponse(
     id=document_id,
@@ -1855,15 +1961,7 @@ async def match_document_to_qbo(
     document_id: str,
     request: MatchToQBORequest,
 ):
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[
-        document_id
-    ]
+    document = _load_document(document_id)
 
     if document.get("status") == ProcessingStatus.PUSHED:
         raise HTTPException(
@@ -1885,6 +1983,8 @@ async def match_document_to_qbo(
                 "requires a bank statement"
             ),
         )
+
+    _ensure_workflow_editable(document)
 
     extracted_data = document.get(
         "extracted_data"
@@ -2189,6 +2289,8 @@ async def match_document_to_qbo(
         ProcessingStatus.MATCHED
     )
 
+    _save_document(document)
+
     return {
         "id": document_id,
         "transactions_extracted": len(
@@ -2242,15 +2344,7 @@ async def match_document_to_qbo(
 async def resolve_bank_statement_vendors(
     document_id: str,
 ):
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[
-        document_id
-    ]
+    document = _load_document(document_id)
 
     if (
         document.get("document_type")
@@ -2263,6 +2357,8 @@ async def resolve_bank_statement_vendors(
                 "available for bank statements"
             ),
         )
+
+    _ensure_workflow_editable(document)
 
     match_results = document.get(
         "qbo_match_results"
@@ -2335,6 +2431,8 @@ async def resolve_bank_statement_vendors(
         == "no_vendor_name"
     )
 
+    _save_document(document)
+
     return {
         "id": document_id,
         "vendor_matched_count": (
@@ -2357,13 +2455,7 @@ async def resolve_bank_statement_vendors(
 async def suggest_bank_statement_categories(
     document_id: str,
 ):
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     if (
         document.get("document_type")
@@ -2376,6 +2468,8 @@ async def suggest_bank_statement_categories(
                 "available for bank statements"
             ),
         )
+
+    _ensure_workflow_editable(document)
 
     match_results = document.get(
         "qbo_match_results"
@@ -2609,6 +2703,8 @@ async def suggest_bank_statement_categories(
         "category_suggestions"
     ] = suggestions
 
+    _save_document(document)
+
     return {
         "id": document_id,
         "transactions_processed": len(
@@ -2633,13 +2729,7 @@ async def review_bank_statement_category(
     transaction_index: int,
     review: CategoryReviewRequest,
 ):
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     if (
         document.get("document_type")
@@ -2712,6 +2802,8 @@ async def review_bank_statement_category(
             ),
         )
     
+    _ensure_workflow_editable(document)
+
     if review.decision == "approve":
         category_match = (
             selected_category.get(
@@ -2878,6 +2970,8 @@ async def review_bank_statement_category(
         "category_suggestions"
     ] = category_suggestions
 
+    _save_document(document)
+
     return {
         "id": document_id,
         "transaction_index": (
@@ -2901,13 +2995,7 @@ async def review_bank_statement_category(
 async def get_bank_statement_category_review(
     document_id: str,
 ):
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     if (
         document.get("document_type")
@@ -2987,13 +3075,7 @@ async def review_bank_statement_match(
     transaction_index: int,
     review: BankMatchReviewRequest,
 ):
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     if (
         document.get("document_type")
@@ -3047,6 +3129,8 @@ async def review_bank_statement_match(
                 "after the document has been pushed to QBO"
             ),
         )
+
+    _ensure_workflow_editable(document)
 
     if review.decision == "approve":
         best_match = selected_match.get(
@@ -3143,6 +3227,8 @@ async def review_bank_statement_match(
             "reviewed_match"
         ] = override_match
 
+    _save_document(document)
+
     return {
         "id": document_id,
         "transaction_index": (
@@ -3166,13 +3252,7 @@ async def review_bank_statement_match(
 async def get_bank_statement_match_review(
     document_id: str,
 ):
-    if document_id not in documents_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Document not found",
-        )
-
-    document = documents_db[document_id]
+    document = _load_document(document_id)
 
     match_results = document.get(
         "qbo_match_results"

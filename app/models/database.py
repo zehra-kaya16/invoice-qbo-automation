@@ -5,7 +5,7 @@ Uses SQLAlchemy for ORM with PostgreSQL.
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
@@ -29,6 +29,8 @@ Base = declarative_base()
 def generate_uuid():
     return str(uuid.uuid4())
 
+def utc_now():
+    return datetime.now(UTC).replace(tzinfo=None)
 
 class Company(Base):
     """
@@ -40,9 +42,8 @@ class Company(Base):
     id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
     name = Column(String(255), nullable=False)
     email = Column(String(255))
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)    
     # Subscription
     subscription_tier = Column(String(50), default="starter")  # starter, pro, firm
     subscription_status = Column(String(50), default="trial")  # trial, active, canceled
@@ -68,7 +69,7 @@ class User(Base):
     name = Column(String(255))
     role = Column(String(50), default="user")  # admin, user
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
     last_login = Column(DateTime)
     
     # Relationships
@@ -97,9 +98,8 @@ class QBOConnection(Base):
     # Status
     is_active = Column(Boolean, default=True)
     last_sync = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)    
     # Relationships
     company = relationship("Company", back_populates="qbo_connections")
 
@@ -133,7 +133,7 @@ class Document(Base):
     error_message = Column(Text)
     
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
     processed_at = Column(DateTime)
     
     # Relationships
@@ -255,4 +255,4 @@ class AuditLog(Base):
     ip_address = Column(String(50))
     user_agent = Column(String(500))
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
