@@ -985,12 +985,15 @@ class QBOClient:
         date: str,
         due_date: str = None,
         description: str = None,
+        recovery_marker: str = None,
     ) -> dict:
         """
         Create a bill (accounts payable) in QBO.
         """
 
         bill = Bill()
+        if recovery_marker:
+            bill.PrivateNote = recovery_marker
         bill.TxnDate = date
         bill.DueDate = due_date or date
 
@@ -1030,6 +1033,7 @@ class QBOClient:
         date: str,
         description: str = None,
         bank_account_id: str = None,
+        recovery_marker: str = None,
     ) -> dict:
         """
         Create an expense (purchase) in QBO.
@@ -1048,6 +1052,8 @@ class QBOClient:
         )
 
         purchase = Purchase()
+        if recovery_marker:
+            purchase.PrivateNote = recovery_marker
         purchase.PaymentType = "Cash"
         purchase.TxnDate = date
 
@@ -1171,6 +1177,7 @@ class QBOClient:
         content_type: str,
         entity_type: str,
         entity_id: str,
+        recovery_marker: str = None,
     ) -> dict:
         """
         Upload a source document and attach it to a QBO entity.
@@ -1182,6 +1189,8 @@ class QBOClient:
 
         attachable = Attachable()
 
+        if recovery_marker:
+            attachable.Note = recovery_marker
         attachable.FileName = file_name
         attachable.ContentType = content_type
 
@@ -1204,3 +1213,52 @@ class QBOClient:
             "entity_type": entity_type,
             "entity_id": str(entity_id),
         }
+
+    def get_recovery_transaction(self, transaction_type: str, transaction_id: str) -> dict:
+        classes = {"bill": Bill, "expense": Purchase, "purchase": Purchase,
+                   "deposit": Deposit, "transfer": Transfer, "bill_payment": BillPayment, "payment": Payment}
+        if transaction_type not in classes or not str(transaction_id).isdigit():
+            raise ValueError("Invalid QBO transaction type or ID")
+        value = classes[transaction_type].get(str(transaction_id), qb=self.qb_client)
+        if value is None:
+            raise ValueError("QBO transaction was not found")
+        lines = []
+        for line in getattr(value, "Line", []) or []:
+            if getattr(line, "DetailType", None) == "AccountBasedExpenseLineDetail":
+                detail = getattr(line, "AccountBasedExpenseLineDetail", None)
+                lines.append(_currency_ref(getattr(detail, "AccountRef", None)))
+        return {"id": str(value.Id), "type": transaction_type, "date": str(getattr(value, "TxnDate", "")),
+                "amount": str(getattr(value, "TotalAmt", getattr(value, "Amount", ""))), "currency": _currency_ref(getattr(value, "CurrencyRef", None)),
+                "vendor_id": _currency_ref(getattr(value, "VendorRef", None) if transaction_type == "bill" else getattr(value, "EntityRef", None)),
+                "bank_account_id": _currency_ref(getattr(value, "AccountRef", None)),
+                "expense_accounts": lines, "marker": getattr(value, "PrivateNote", None)}
+
+    def find_recovery_transactions(self, create_as: str, date: str, marker: str) -> list[dict]:
+        Date.fromisoformat(date)
+        if create_as not in {"bill", "expense"} or not marker:
+            raise ValueError("Invalid recovery lookup")
+        cls = Bill if create_as == "bill" else Purchase
+        found = []
+        for page in range(100):
+            values = cls.filter(TxnDate=date, start_position=page * 1000 + 1, max_results=1000, qb=self.qb_client)
+            for item in values:
+                if getattr(item, "PrivateNote", None) == marker:
+                    found.append(self.get_recovery_transaction(create_as, str(item.Id)))
+            if len(values) < 1000:
+                return found
+        raise RuntimeError("QBO lookup exceeded the page limit; result is not complete")
+
+    def get_recovery_attachments(self, entity_type: str, entity_id: str) -> list[dict]:
+        found = []
+        for page in range(100):
+            values = Attachable.all(start_position=page * 1000 + 1, max_results=1000, qb=self.qb_client)
+            for item in values:
+                for link in getattr(item, "AttachableRef", []) or []:
+                    ref = getattr(link, "EntityRef", None)
+                    kind = ref.get("type") if isinstance(ref, dict) else getattr(ref, "type", None)
+                    if kind == entity_type and str(_currency_ref(ref)) == str(entity_id):
+                        found.append({"id": str(item.Id), "file_name": item.FileName, "size": item.Size, "marker": item.Note})
+                        break
+            if len(values) < 1000:
+                return found
+        raise RuntimeError("QBO attachment lookup exceeded the page limit; result is not complete")

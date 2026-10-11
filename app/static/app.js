@@ -258,9 +258,11 @@
     el("approval-status").textContent = state.dirty ? "Kaydedilmemiş değişiklikler" : (state.extraction?.approved ? "Onaylı" : "Onay bekliyor");
     qboControls();
     bankControls();
+    recoveryControls();
     el("approval-status").className = state.extraction?.approved && !state.dirty ? "badge pushed" : "badge";
   }
   function resetReviewState() {
+    resetRecovery();
     resetBank();
     resetQBO();
     state.reviewController?.abort();
@@ -422,6 +424,7 @@
     reviewControls();
   }
   async function loadReview(document, sourceSequence) {
+    resetRecovery();
     resetBank();
     resetQBO();
     state.reviewController?.abort();
@@ -442,7 +445,7 @@
       state.reviewNeedsRefresh = true;
       el("review-error").textContent = errorMessage(error); el("review-error").hidden = false;
     } finally {
-      if (requestId === state.reviewRequest) { state.reviewLoading = false; reviewControls(); if (state.document?.document_type === "bank_statement") void readBank(); }
+      if (requestId === state.reviewRequest) { state.reviewLoading = false; reviewControls(); void readRecovery(); if (state.document?.document_type === "bank_statement") void readBank(); }
     }
   }
   async function refreshReview() {
@@ -494,7 +497,7 @@
       // Reading is safe after a failed mutation; never automatically repeat POST/PATCH.
       try { state.document = await json(pathFor(id)); detail(state.document); } catch (_) { /* Keep the existing draft. */ }
     } finally {
-      state.reviewBusy = false; reviewControls();
+      state.reviewBusy = false; reviewControls(); void readRecovery();
     }
   }
 
@@ -662,11 +665,120 @@
       if (uncertain) { bank.uncertain = true; state.reviewNeedsRefresh = true; }
       // Read persisted checkpoints after a failed write. Never repeat POST/PATCH automatically.
       if (action === "push") { await readBank(); await loadDocuments(); }
-    } finally { state.reviewBusy = false; reviewControls(); }
+    } finally { state.reviewBusy = false; reviewControls(); void readRecovery(); }
   }
   el("bank-refresh").addEventListener("click", () => { if (canLeaveReview()) void readBank(true); });
   el("bank-account").addEventListener("input", () => { invalidateBankPlan(); bankControls(); });
   for (const action of ["load", "match", "vendors", "categories", "preview", "push"]) el(`bank-${action}`).addEventListener("click", () => bankAction(action));
+
+  const recovery = {data: null, request: 0, loading: false, message: ""};
+  function resetRecovery() {
+    ++recovery.request; recovery.data = null; recovery.loading = false; recovery.message = "";
+    el("recovery-panel").hidden = true; el("recovery-items").replaceChildren(); el("recovery-error").hidden = true;
+  }
+  function recoveryControls() {
+    const waiting = state.reviewBusy || state.reviewLoading || recovery.loading;
+    el("recovery-refresh").disabled = waiting;
+    for (const field of el("recovery-items").querySelectorAll("button,select,input")) field.disabled = waiting || !recovery.data?.realm_id || state.dirty || bankChoiceDirty() || field.dataset.unavailable === "true";
+    el("recovery-message").textContent = recovery.loading ? "Kayıtlı QBO durumu okunuyor…" : recovery.message || recovery.data?.blocked_reason || "Önce QBO’daki sonucu kontrol et. Doğrulama yeni Bill/Expense oluşturmaz.";
+  }
+  async function readRecovery() {
+    if (!["invoice", "receipt", "bank_statement"].includes(state.document?.document_type)) return;
+    const id = state.selectedId, source = state.sourceRequest, sequence = ++recovery.request;
+    recovery.loading = true; recoveryControls();
+    try {
+      const data = await json(`${pathFor(id)}/recovery`);
+      if (sequence !== recovery.request || source !== state.sourceRequest) return;
+      recovery.data = data; renderRecovery();
+    } catch (error) {
+      if (sequence !== recovery.request || source !== state.sourceRequest) return;
+      el("recovery-error").textContent = errorMessage(error); el("recovery-error").hidden = false;
+    } finally { if (sequence === recovery.request) { recovery.loading = false; recoveryControls(); } }
+  }
+  function renderRecovery() {
+    const data = recovery.data; if (!data) return;
+    el("recovery-panel").hidden = data.items.length === 0;
+    const target = el("recovery-items"); target.replaceChildren();
+    for (const item of data.items) {
+      const card = node("div", undefined, "bank-record"); card.dataset.recoveryKey = item.key;
+      card.append(node("h4", item.label));
+      summaryRows(card, item, [["status", "Kayıtlı durum"], ["transaction_id", "QBO işlem ID"], ["attachment_id", "QBO ek ID"], ["desired_account", "Onaylı hesap ID"], ["error", "Kayıtlı hata"]]);
+      const provider = node("div", undefined, "recovery-provider");
+      const select = node("select"); select.hidden = true; select.setAttribute("aria-label", `${item.label} QBO kaydı`);
+      const confirmation = node("label", undefined, "recovery-confirmation"); confirmation.hidden = true;
+      const checkbox = node("input"); checkbox.type = "checkbox";
+      confirmation.append(checkbox, node("span", "Seçilen QBO ekini açıp kaynakla aynı içerikte olduğunu doğruladım."));
+      const actions = node("div", undefined, "review-actions");
+      for (const [operation, title] of [["inspect", "QBO’daki sonucu kontrol et"], ["verify", "Doğrulanan sonucu kaydet"], ["retry", item.key.startsWith("category:") ? "Onaylı kategoriyi yeniden uygula" : "Başlamamış ek yüklemesini başlat"]]) {
+        if (operation === "retry" && !item.can_retry) continue;
+        const button = node("button", title, "button secondary"); button.type = "button";
+        // Inspect before choosing a provider record or confirming a retry.
+        if (operation !== "inspect") button.dataset.unavailable = "true";
+        button.addEventListener("click", () => recoverItem(item, operation, card, provider, select, checkbox)); actions.append(button);
+      }
+      card.append(provider, select, confirmation, actions); target.append(card);
+    }
+    const history = el("recovery-history"); history.replaceChildren(); history.hidden = !data.history.length;
+    if (data.history.length) { history.append(node("h4", "Toparlanma geçmişi")); for (const entry of data.history) history.append(node("p", `${entry.time} · ${entry.key} · ${entry.operation}`, "small muted")); }
+    recoveryControls();
+  }
+  async function recoverItem(item, operation, card, provider, select, checkbox) {
+    if (state.reviewBusy || state.reviewLoading || recovery.loading || state.dirty || bankChoiceDirty() || !recovery.data?.realm_id) return;
+    const body = {key:item.key, operation, expected_revision:recovery.data.revision, expected_realm_id:recovery.data.realm_id};
+    if (operation === "verify" && select.value) {
+      if (item.key === "transaction") body.transaction_id = select.value;
+      else if (!item.key.startsWith("category:")) { body.attachment_id = select.value; body.confirmed_attachment = checkbox.checked; }
+    }
+    if (operation === "retry") {
+      if (!item.can_retry || !window.confirm(item.key.startsWith("category:") ? "Kayıtlı onaylı hesabı bu mevcut Purchase işlemine yeniden uygulamak istiyor musun?" : "Bu yüklemenin dış yazımı başlamamış. Kaynağı mevcut QBO işlemine eklemek istiyor musun?")) return;
+      body.acknowledged = true;
+    }
+    if (operation === "verify" && !window.confirm("QBO’dan tekrar doğrulanacak sonucu yerel kayda geçirmek istiyor musun?")) return;
+    state.reviewBusy = true; el("recovery-error").hidden = true; recovery.message = operation === "inspect" ? "QBO kaydı okunuyor…" : "QBO sonucu doğrulanıyor…";
+    invalidatePlan(); invalidateBankPlan(); reviewControls();
+    try {
+      const response = await json(`${pathFor(state.selectedId)}/recovery`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      recovery.data = response.recovery;
+      if (operation === "inspect") {
+        provider.replaceChildren(); select.replaceChildren(); select.hidden = true; checkbox.parentElement.hidden = true;
+        const data = response.provider;
+        if (data.transactions) {
+          provider.append(node("p", `${data.transactions.length} deneme kimliğiyle eşleşen QBO kaydı bulundu.`));
+          const empty = node("option", "QBO kaydı seç (tek eşleşme otomatik doğrulanabilir)"); empty.value=""; select.append(empty);
+          for (const txn of data.transactions) { const option=node("option",`${txn.type} ${txn.id} · ${txn.date} · ${txn.amount} ${txn.currency || ""}`);option.value=txn.id;select.append(option); }
+          select.hidden = data.transactions.length === 0;
+        } else if (data.attachments) {
+          provider.append(node("p", `QBO işlem ${data.transaction_id} üzerinde ${data.attachments.length} ek var. Kaynak: ${data.file_name} · ${data.size ?? "—"} bayt.`));
+          provider.append(node("p", "Uygulamanın ek kimliği bulunamazsa QuickBooks’taki eki açıp kaynağı doğrula; sonra ek ID’sini seç.", "muted small"));
+          const empty = node("option", "Uygulamanın ek kimliğini otomatik doğrula"); empty.value=""; select.append(empty);
+          for (const attachment of data.attachments) { const option=node("option",`${attachment.file_name} · ${attachment.id} · ${attachment.size ?? "—"} bayt`);option.value=attachment.id;select.append(option); }
+          select.hidden = data.attachments.length === 0; checkbox.parentElement.hidden = data.attachments.length === 0;
+        } else {
+          summaryRows(provider, {id:data.transaction.id, current:data.current_account, desired:data.desired_account}, [["id","QBO Purchase ID"],["current","QBO’daki mevcut gider hesabı"],["desired","Kayıtlı onaylı gider hesabı"]]);
+        }
+        for (const button of card.querySelectorAll("button")) button.dataset.unavailable = "false";
+        recovery.message = "QBO sonucu okundu. Kaydetmeden önce kayıt ve ekleri kontrol et.";
+      } else {
+        recovery.message = "Toparlanma sonucu kaydedildi. Yeni Bill/Expense oluşturulmadı.";
+        state.document = await json(pathFor(state.selectedId)); state.reviewNeedsRefresh = false; detail(state.document); renderReview();
+        if (state.document.document_type === "bank_statement") await readBank();
+        await loadDocuments(); renderRecovery();
+      }
+    } catch (error) {
+      recovery.message = "Toparlanma tamamlanamadı; mevcut kayıt ve kilit korunuyor.";
+      el("recovery-error").textContent = errorMessage(error); el("recovery-error").hidden = false;
+      if (operation !== "inspect") {
+        // A lost response can hide a completed save; reread instead of repeating it.
+        try {
+          state.document = await json(pathFor(state.selectedId)); state.reviewNeedsRefresh = false; detail(state.document); renderReview();
+          if (state.document.document_type === "bank_statement") await readBank();
+          await loadDocuments();
+        } catch (_) { state.reviewNeedsRefresh = true; }
+        await readRecovery();
+      }
+    } finally { state.reviewBusy = false; reviewControls(); }
+  }
+  el("recovery-refresh").addEventListener("click", () => { if (canLeaveReview()) { recovery.message=""; el("recovery-error").hidden=true; void readRecovery(); } });
 
   // Mapping and preview live only for the currently selected, approved document.
   const qbo = {realm: null, ready: false, plan: null, uncertain: false};
@@ -768,7 +880,7 @@
         // Never repeat an external write after a failed or lost response.
         try { state.document = await json(pathFor(id)); detail(state.document); await loadDocuments(); } catch (_) { /* Explicit refresh is required. */ }
       }
-    } finally { state.reviewBusy = false; reviewControls(); }
+    } finally { state.reviewBusy = false; reviewControls(); void readRecovery(); }
   }
   for (const id of ["qbo-create-as", "qbo-vendor", "qbo-account", "qbo-bank", "qbo-description"]) {
     el(id).addEventListener("input", () => { invalidatePlan(); qboControls(); });

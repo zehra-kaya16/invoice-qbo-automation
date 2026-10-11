@@ -38,3 +38,11 @@
   #bank-panel .review-actions > .review-field {flex:none; width:100%; max-width:none;}
   #bank-panel .section-heading {flex-direction:column; align-items:flex-start;}
 }
+
+#recovery-panel > summary {font-weight:650; cursor:pointer; margin-bottom:16px;}
+#recovery-message {margin:12px 0;}
+.recovery-confirmation {display:flex; align-items:flex-start; gap:10px; font-size:.875rem; margin:12px 0;}
+.recovery-confirmation input {margin-top:5px; flex:none;}
+.recovery-provider {margin:12px 0; overflow-wrap:anywhere;}
+.recovery-provider p {margin:8px 0;}
+@media(max-width:600px){#recovery-panel .review-actions{flex-direction:column;align-items:stretch}#recovery-panel .button{width:100%;flex:none;overflow-wrap:normal}}

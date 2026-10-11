@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import documents, health, qbo
+from app.api import documents, health, qbo, recovery
 
 app = FastAPI(
     title="Invoice QBO Automation",
@@ -23,6 +23,8 @@ app.include_router(
     prefix="/api/qbo",
     tags=["QuickBooks"],
 )
+app.include_router(recovery.router, prefix="/api/documents", tags=["QBO recovery"])
+
 # Resolve paths relative to this module, including on Windows.
 app_directory = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=str(app_directory / "static")), name="static")

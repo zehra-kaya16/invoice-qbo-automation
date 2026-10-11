@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+import uuid
 import copy
 import os
 import tempfile
@@ -812,6 +814,8 @@ def _push_bank_statement_checks(
             errors.append(message)
             continue
 
+        item["attachment_marker"] = item.get("attachment_marker") or "receipt-ai:" + uuid.uuid4().hex + ":check"
+        item["attachment_started_at"] = datetime.now(timezone.utc).isoformat()
         item["attachment_push_status"] = "uploading"
         if persist is not None:
             persist(document)
@@ -822,9 +826,8 @@ def _push_bank_statement_checks(
                 file_name=path.name,
                 content_type="image/png",
                 entity_type=entity_type,
-                entity_id=str(
-                    transaction_id
-                ),
+                entity_id=str(transaction_id),
+                recovery_marker=item["attachment_marker"],
             )
 
             if not result.get("id"):
@@ -1235,6 +1238,7 @@ def _push_bank_statement_categories(
                 },
             )
 
+        selected_category["qbo_category_started_at"] = datetime.now(timezone.utc).isoformat()
         selected_category[
             "qbo_category_push_status"
         ] = "pushing"
@@ -1909,6 +1913,10 @@ async def push_to_qbo(
 
     # Bundan önce QBO'ya hiçbir write yapılmadı.
     # Şimdi external write başlamak üzere.
+    document["qbo_push_context"] = {"realm_id": getattr(client, "realm_id", None),
+                                    "plan": plan, "currency": invoice_data.currency,
+                                    "marker": "receipt-ai:" + uuid.uuid4().hex}
+    document["qbo_push_started_at"] = datetime.now(timezone.utc).isoformat()
     mark_invoice_push_started(document)
     _save_document(document)
 
@@ -1919,12 +1927,12 @@ async def push_to_qbo(
 
         if plan["method"] == "create_bill":
             result = client.create_bill(
-                **plan["kwargs"]
+                **plan["kwargs"], recovery_marker=document["qbo_push_context"]["marker"]
             )
 
         elif plan["method"] == "create_expense":
             result = client.create_expense(
-                **plan["kwargs"]
+                **plan["kwargs"], recovery_marker=document["qbo_push_context"]["marker"]
             )
 
         else:
@@ -2018,6 +2026,8 @@ async def push_to_qbo(
                     f"for attachment: {transaction_type}"
                 )
 
+            document["qbo_attachment_marker"] = document["qbo_push_context"]["marker"] + ":source"
+            document["qbo_attachment_started_at"] = datetime.now(timezone.utc).isoformat()
             document["qbo_attachment_push_status"] = "uploading"
             _save_document(document)
 
@@ -2027,6 +2037,7 @@ async def push_to_qbo(
                 content_type=content_type,
                 entity_type=entity_type,
                 entity_id=transaction_id,
+                recovery_marker=document["qbo_attachment_marker"],
             )
 
             if not attachment_result.get("id"):
@@ -2044,6 +2055,8 @@ async def push_to_qbo(
         except Exception as exc:
             if document.get("qbo_attachment_push_status") == "uploading":
                 document["qbo_attachment_push_status"] = "uncertain"
+            else:
+                document["qbo_attachment_push_status"] = "failed_before_write"
             document["qbo_attachment_error"] = str(exc)
             _save_document(document)
 

@@ -129,6 +129,13 @@
           <button id="bank-push" class="button primary" type="button" disabled>Onaylanan kategorileri ve çek eklerini aktar</button></div>
         <div id="bank-plan" class="validation-panel" hidden></div><p id="bank-result" role="status" aria-live="polite"></p>
       </section>
+      <details id="recovery-panel" class="qbo-panel" hidden>
+        <summary>QBO işlem kontrolü ve hata toparlanması</summary>
+        <p id="recovery-message" role="status" aria-live="polite"></p>
+        <button id="recovery-refresh" class="button secondary" type="button">Toparlanma durumunu yenile</button>
+        <p id="recovery-error" class="error-message" role="alert" hidden></p>
+        <div id="recovery-items" class="bank-records"></div><div id="recovery-history" hidden></div>
+      </details>
       <details id="raw-extraction" class="raw-extraction" hidden><summary>Çıkarılan metin</summary><pre id="raw-text"></pre></details>
     </section>
   </main>
