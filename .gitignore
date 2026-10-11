@@ -34,3 +34,7 @@ receipt_ai.db
 receipt_ai.db-*
 .coverage
 htmlcov/
+
+*.db
+*.sqlite
+*.sqlite3

@@ -90,10 +90,14 @@ class QBOConnection(Base):
     realm_id = Column(String(50), unique=True, nullable=False)
     qbo_company_name = Column(String(255))
     
-    # OAuth tokens (encrypted in production)
+    # OAuth tokens encrypted with QBO_TOKEN_ENCRYPTION_KEY.
     access_token = Column(Text)
     refresh_token = Column(Text)
     token_expires_at = Column(DateTime)
+    environment = Column(String(20), nullable=False, default="sandbox", server_default="sandbox")
+    client_fingerprint = Column(String(64))
+    revision = Column(Integer, nullable=False, default=1, server_default="1")
+    token_state = Column(String(20), nullable=False, default="ready", server_default="ready")
     
     # Status
     is_active = Column(Boolean, default=True)
@@ -102,6 +106,17 @@ class QBOConnection(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)    
     # Relationships
     company = relationship("Company", back_populates="qbo_connections")
+
+
+class QBOOAuthAttempt(Base):
+    """Durable, expiring, one-use OAuth state; never stores the raw nonce."""
+    __tablename__ = "qbo_oauth_attempts"
+
+    state_hash = Column(String(64), primary_key=True)
+    environment = Column(String(20), nullable=False)
+    client_fingerprint = Column(String(64), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    expires_at = Column(DateTime, nullable=False)
 
 
 class Document(Base):

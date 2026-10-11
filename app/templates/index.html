@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Invoice QBO Automation — Belgeler</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">İçeriğe geç</a>
+  <header class="header">
+    <div class="header-inner">
+      <a class="brand" href="/" aria-label="Invoice QBO Automation ana sayfa">
+        <span class="brand-mark" aria-hidden="true">IQ</span>
+        <span>Invoice <span class="brand-sub">QBO Automation</span></span>
+      </a>
+      <div class="connection">
+        <span id="qbo-status" class="connection-label" role="status">QuickBooks kontrol ediliyor…</span>
+        <a id="qbo-connect" class="button secondary" href="/api/qbo/connect" hidden>QBO’ya bağlan</a>
+      </div>
+    </div>
+  </header>
+  <main id="main" class="workspace">
+    <div class="page-heading">
+      <div><p class="eyebrow">BELGE ÇALIŞMA ALANI</p><h1>Belgelerin burada.</h1>
+        <p class="muted">Fatura, fiş ve ekstrelerini yükle; kayıtlarını ve kaynak dosyalarını görüntüle.</p></div>
+      <button id="choose-files" class="button primary" type="button">+ Belge yükle</button>
+    </div>
+    <section class="upload-card" aria-labelledby="upload-heading">
+      <div class="section-heading"><h2 id="upload-heading">Yeni belge ekle</h2><span class="muted small">PDF · PNG · JPG · HEIC</span></div>
+      <input id="file-input" class="visually-hidden" type="file" accept=".pdf,.png,.jpg,.jpeg,.heic" multiple aria-label="Yüklenecek dosyaları seç">
+      <button id="upload-zone" class="upload-zone" type="button">
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m-4 4 4-4 4 4M4 15v5h16v-5"/></svg>
+        <span class="upload-title">Dosyaları buraya sürükle</span>
+        <span class="muted">veya dosya seçmek için tıkla</span>
+      </button>
+      <p id="upload-status" class="small muted" role="status" aria-live="polite">Birden fazla dosya seçebilirsin.</p>
+      <ul id="upload-results" class="upload-results" aria-label="Yükleme sonuçları" hidden></ul>
+    </section>
+    <div class="content-grid">
+      <section class="list-card" aria-labelledby="list-heading">
+        <div class="list-header">
+          <div><h2 id="list-heading">Belgeler</h2><p id="document-count" class="muted small" role="status">Kayıtlar yükleniyor…</p></div>
+          <button id="refresh-list" class="button secondary" type="button">Listeyi yenile</button>
+        </div>
+        <p id="list-message" class="state-message" role="status">Belgeler yükleniyor…</p>
+        <div class="table-wrap"><table id="documents-table" hidden>
+          <caption class="visually-hidden">Kalıcı belge kayıtları</caption>
+          <thead><tr><th scope="col">Dosya</th><th scope="col">Durum</th><th scope="col">Tür</th><th scope="col"><span class="visually-hidden">İşlem</span></th></tr></thead>
+          <tbody id="documents-body"></tbody>
+        </table></div>
+        <p id="list-error" class="error-message" role="alert" hidden></p>
+        <div class="pagination">
+          <span id="page-info" class="muted small">—</span>
+          <div><button id="previous-page" class="button secondary" type="button" disabled>Önceki</button>
+            <button id="next-page" class="button secondary" type="button" disabled>Sonraki</button></div>
+        </div>
+      </section>
+      <section id="source-panel" class="source-card" aria-labelledby="source-heading">
+        <div class="source-header"><div><p class="eyebrow">KAYNAK DOSYA</p><h2 id="source-heading">Belge önizlemesi</h2></div>
+          <button id="close-source" class="icon-button" type="button" aria-label="Kaynak görüntüleyiciyi kapat" hidden>×</button></div>
+        <p id="source-filename" class="source-filename muted">Listeden bir belge seç.</p>
+        <dl id="document-detail" class="detail-list" hidden></dl>
+        <div id="source-viewer" class="source-viewer"><p class="muted">Seçtiğin belgenin kaynağı burada görüntülenir.</p></div>
+        <p id="source-error" class="error-message" role="alert" hidden></p>
+        <a id="review-jump" class="button secondary download-button" href="#review-panel" hidden>Verileri incele</a>
+        <a id="source-download" class="button secondary download-button" hidden>Kaynak dosyayı indir</a>
+      </section>
+    </div>
+    <section id="review-panel" class="review-card" aria-labelledby="review-heading" hidden>
+      <div class="review-header">
+        <div><p class="eyebrow">VERİ ÇIKARMA VE İNCELEME</p><h2 id="review-heading">Belge verileri</h2>
+          <p id="review-filename" class="muted small"></p></div>
+        <div class="review-actions"><button id="refresh-review" class="button secondary" type="button">Durumu yenile</button>
+          <button id="extract-document" class="button primary" type="button" hidden>Verileri çıkar</button></div>
+      </div>
+      <p id="review-message" class="review-message" role="status" aria-live="polite"></p>
+      <p id="review-error" class="error-message" role="alert" hidden></p>
+      <div id="validation-panel" class="validation-panel" hidden></div>
+      <form id="receipt-form" class="receipt-form" hidden>
+        <fieldset id="receipt-fields"><legend class="visually-hidden">Fatura veya fiş alanları</legend>
+          <div id="receipt-inputs" class="form-grid"></div>
+          <div class="line-heading"><h3>Kalemler</h3><button id="add-line-item" class="button secondary" type="button">+ Kalem ekle</button></div>
+          <p class="muted small">Ondalık ayırıcı: nokta (550.00).</p>
+          <div id="line-items" class="line-items"></div>
+        </fieldset>
+        <div class="review-footer"><span id="approval-status" class="badge"></span>
+          <div class="review-actions"><button id="reset-review" class="button secondary" type="button">Değişiklikleri geri al</button>
+            <button id="save-review" class="button primary" type="submit">Değişiklikleri kaydet</button>
+            <button id="approve-document" class="button primary" type="button">Belgeyi onayla</button></div></div>
+      </form>
+      <div id="readonly-extraction" class="readonly-extraction" hidden></div>
+      <section id="qbo-panel" class="qbo-panel" aria-labelledby="qbo-heading" hidden>
+        <div class="section-heading"><h3 id="qbo-heading">QuickBooks’e aktar</h3>
+          <button id="qbo-load" class="button secondary" type="button">QBO seçeneklerini yükle</button></div>
+        <p id="qbo-message" class="muted" role="status" aria-live="polite">Önce belgeyi kaydet ve onayla.</p>
+        <p id="qbo-error" class="error-message" role="alert" hidden></p>
+        <dl id="qbo-result" class="readonly-summary" hidden></dl>
+        <fieldset id="qbo-fields" disabled><legend class="visually-hidden">QBO işlem ayarları</legend>
+          <div class="form-grid">
+            <label class="review-field"><span>İşlem türü</span><select id="qbo-create-as"><option value="bill">Bill — ödenecek fatura</option><option value="expense">Expense — ödenmiş gider</option></select></label>
+            <label class="review-field"><span>QBO satıcısı</span><select id="qbo-vendor"><option value="">Satıcı seç</option></select></label>
+            <label class="review-field"><span>Gider hesabı</span><select id="qbo-account"><option value="">Gider hesabı seç</option></select></label>
+            <label id="qbo-bank-label" class="review-field" hidden><span>Ödemenin çıktığı banka hesabı</span><select id="qbo-bank"><option value="">Banka hesabı seç</option></select></label>
+            <label class="review-field"><span>İşlem açıklaması (isteğe bağlı)</span><input id="qbo-description" type="text"></label>
+          </div>
+          <p id="qbo-suggestions" class="muted small"></p>
+        </fieldset>
+        <div class="review-actions"><button id="qbo-preview" class="button secondary" type="button" disabled>Planı önizle</button>
+          <button id="qbo-push" class="button primary" type="button" disabled>QBO’ya gönder ve kaynağı ekle</button></div>
+        <div id="qbo-plan" class="validation-panel" hidden></div>
+      </section>
+      <details id="raw-extraction" class="raw-extraction" hidden><summary>Çıkarılan metin</summary><pre id="raw-text"></pre></details>
+    </section>
+  </main>
+  <footer class="footer">Invoice QBO Automation <span>Belge çalışma alanı</span></footer>
+</body>
+</html>

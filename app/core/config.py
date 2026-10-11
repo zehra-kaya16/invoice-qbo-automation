@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # QuickBooks Online
     qbo_client_id: Optional[str] = None
     qbo_client_secret: Optional[str] = None
+    qbo_token_encryption_key: Optional[str] = None
     qbo_redirect_uri: str = "http://localhost:8000/api/qbo/callback"
     qbo_environment: Literal["sandbox", "production"] = "sandbox"
 

@@ -1,6 +1,6 @@
 import unicodedata
 from datetime import date as Date
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import List, Optional
 
@@ -26,6 +26,12 @@ from quickbooks.objects.detailline import (
 )
 from quickbooks.objects.purchase import Purchase
 from quickbooks.objects.vendor import Vendor
+
+
+def _currency_ref(reference):
+    if isinstance(reference, dict):
+        return reference.get("value")
+    return getattr(reference, "value", None)
 
 
 def _normalize_vendor_name(value: str) -> str:
@@ -147,7 +153,7 @@ class QBOClient:
         self.access_token = self.auth_client.access_token
         self.refresh_token = self.auth_client.refresh_token
         self.realm_id = realm_id
-        self.token_expires_at = datetime.now() + timedelta(hours=1)
+        self.token_expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=int(self.auth_client.expires_in or 3600))
 
         self._init_qb_client()
 
@@ -172,7 +178,7 @@ class QBOClient:
         self.realm_id = realm_id
 
         self.token_expires_at = (
-            expires_at or datetime.now() + timedelta(hours=1)
+            expires_at or datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=int(self.auth_client.expires_in or 3600))
         )
 
         self.auth_client.access_token = access_token
@@ -193,7 +199,7 @@ class QBOClient:
 
         self.access_token = self.auth_client.access_token
         self.refresh_token = self.auth_client.refresh_token
-        self.token_expires_at = datetime.now() + timedelta(hours=1)
+        self.token_expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=int(self.auth_client.expires_in or 3600))
 
         self._init_qb_client()
 
@@ -236,6 +242,14 @@ class QBOClient:
             "email": info.Email.Address if info.Email else None,
         }
 
+    def get_currency_preferences(self) -> dict:
+        from quickbooks.objects.preferences import Preferences
+        prefs = Preferences.get(qb=self.qb_client).CurrencyPrefs
+        return {
+            "home_currency": _currency_ref(prefs.HomeCurrency),
+            "multicurrency_enabled": prefs.MultiCurrencyEnabled,
+        }
+
     def get_vendors(self, active_only: bool = True) -> List[dict]:
         """Get list of vendors."""
         vendors = Vendor.all(qb=self.qb_client)
@@ -255,6 +269,7 @@ class QBOClient:
                     else None
                 ),
                 "active": v.Active,
+                "currency": _currency_ref(getattr(v, "CurrencyRef", None)),
             })
 
         return result
@@ -379,6 +394,7 @@ class QBOClient:
                 "type": a.AccountType,
                 "sub_type": a.AccountSubType,
                 "fully_qualified_name": a.FullyQualifiedName,
+                "currency": _currency_ref(getattr(a, "CurrencyRef", None)),
             })
 
         return result

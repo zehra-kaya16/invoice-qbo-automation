@@ -69,6 +69,9 @@ print(json.dumps({"status": response.status_code, "body": response.json()}))
 
 
 class FakeQBO:
+    def get_currency_preferences(self):
+        return {"home_currency": "USD", "multicurrency_enabled": False}
+
     def __init__(self, document_id, fail=False, fail_attachment=False):
         self.document_id = document_id
         self.fail = fail

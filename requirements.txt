@@ -8,6 +8,7 @@ openai>=1.10.0
 pillow>=10.2.0
 pypdfium2
 # QuickBooks
+cryptography>=42.0.0
 intuit-oauth>=1.2.6
 python-quickbooks>=0.9.7
 # Testing

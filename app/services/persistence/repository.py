@@ -10,7 +10,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -56,6 +56,25 @@ class DocumentRepository:
             document["content"] = row.source_content
             document["_revision"] = row.revision
             return document
+
+    def list_summaries(self, company_key: str, limit: int, offset: int) -> dict:
+        company_uuid = str(uuid.uuid5(
+            uuid.NAMESPACE_URL, f"invoice-qbo-automation:company:{company_key}"
+        ))
+        with self._session() as session:
+            filters = (Document.company_id == company_uuid, Document.api_id.is_not(None))
+            total = session.scalar(select(func.count()).select_from(Document).where(*filters))
+            # Select only summary fields; never load source_content for a list.
+            rows = session.execute(select(
+                Document.api_id, Document.filename, Document.status,
+                Document.document_type, Document.error_message,
+            ).where(*filters).order_by(Document.created_at.desc(), Document.api_id.desc())
+              .limit(limit).offset(offset)).all()
+            return {"total": total, "limit": limit, "offset": offset, "items": [
+                {"id": row.api_id, "filename": row.filename, "status": row.status,
+                 "document_type": row.document_type, "error": row.error_message}
+                for row in rows
+            ]}
 
     def save(self, document: dict) -> None:
         document_id = document.get("id")

@@ -4,9 +4,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
+
+from app.core.config import settings
 
 from app.services.persistence.repository import (
     DocumentConflictError,
@@ -31,6 +34,7 @@ from app.services.categorization.categorizer import (
 from app.services.matching.matcher import (
     BankFeedMatcher,
 )
+from app.services.qbo.currency_guard import check_document_currency
 from app.services.qbo.mapper import build_qbo_create_plan
 from app.services.qbo.push_guard import (
     QBOPushGuardError,
@@ -118,6 +122,7 @@ class DocumentStatus(BaseModel):
     qbo_attachment_error: Optional[str] = None
 
 class PushToQBORequest(BaseModel):
+    expected_realm_id: Optional[str] = None
     create_as: str = "bill"
 
     vendor_id: Optional[str] = None
@@ -211,6 +216,52 @@ async def upload_document(
             ),
         )
 
+class DocumentListItem(BaseModel):
+    id: str
+    filename: str
+    status: ProcessingStatus
+    document_type: Optional[DocumentType] = None
+    error: Optional[str] = None
+
+
+class DocumentListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[DocumentListItem]
+
+
+# Static collection route must precede /{document_id}.
+@router.get("", response_model=DocumentListResponse)
+async def list_documents(
+    company_id: str = Query("default", min_length=1, max_length=100),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    try:
+        return document_repository.list_summaries(company_id, limit, offset)
+    except SQLAlchemyError as exc:
+        raise HTTPException(503, "Document database is unavailable") from exc
+
+
+@router.get("/{document_id}/source")
+async def get_document_source(document_id: str):
+    document = _load_document(document_id)
+    content = document.get("content")
+    if not isinstance(content, bytes) or not content:
+        raise HTTPException(404, "Document source is unavailable")
+    # Only supported document media types may render inline.
+    media_type = document.get("content_type")
+    allowed = {"application/pdf", "image/png", "image/jpeg", "image/jpg", "image/heic"}
+    if media_type not in allowed:
+        media_type = "application/octet-stream"
+    return Response(content=content, media_type=media_type, headers={
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "inline" if media_type in allowed else "attachment",
+    })
+
+
 @router.get("/{document_id}", response_model=DocumentStatus)
 async def get_document(document_id: str):
     document = _load_document(document_id)
@@ -257,12 +308,15 @@ async def process_document(document_id: str):
 
     try:
         document["status"] = ProcessingStatus.CLASSIFYING
+        document["error"] = None
+        document["approved"] = False
+        document["validation"] = None
         _save_document(document)
 
-        api_key = (
-            os.getenv("OPENAI_API_KEY")
-            or os.getenv("ANTHROPIC_API_KEY")
-        )
+        # Settings reads .env; os.environ alone misses .env-only keys.
+        openai_key = os.getenv("OPENAI_API_KEY") or settings.openai_api_key
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY") or settings.anthropic_api_key
+        api_key = openai_key or anthropic_key
 
         if not api_key:
             document["status"] = (
@@ -277,7 +331,7 @@ async def process_document(document_id: str):
 
         provider = (
             "openai"
-            if os.getenv("OPENAI_API_KEY")
+            if openai_key
             else "anthropic"
         )
 
@@ -467,8 +521,6 @@ async def update_extracted_data(
     updates = receipt_data.model_dump(
         exclude_unset=True,
     )
-    print("PATCH fields_set:", receipt_data.model_fields_set)
-    print("PATCH updates:", updates)
 
     # Preserve existing extracted fields that the user did not edit.
     current_data = doc["extracted_data"]
@@ -1669,6 +1721,9 @@ async def push_to_qbo(
     from app.api.qbo import _get_connected_qbo_client
 
     client = _get_connected_qbo_client()
+    if request.expected_realm_id is not None and request.expected_realm_id != client.realm_id:
+        raise HTTPException(409, "QBO company changed; reload mapping options before continuing")
+
 
     # ---------------------------------------------------------
     # 1. Gerçek QBO Vendor ID doğrulaması
@@ -1734,6 +1789,9 @@ async def push_to_qbo(
     # 3. Expense seçildiyse verilen Bank Account ID'yi doğrula
     # ---------------------------------------------------------
 
+    bank_account = None
+    if request.create_as == "expense" and not request.bank_account_id:
+        raise HTTPException(400, "bank_account_id is required for expense creation")
     if request.create_as == "expense" and request.bank_account_id:
         bank_accounts = client.get_bank_accounts()
 
@@ -1773,6 +1831,8 @@ async def push_to_qbo(
     # ---------------------------------------------------------
     # 5. Aynı mapper ile plan oluştur
     # ---------------------------------------------------------
+
+    check_document_currency(client, invoice_data, vendor, account, bank_account)
 
     try:
         plan = build_qbo_create_plan(
