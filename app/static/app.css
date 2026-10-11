@@ -24,3 +24,17 @@
 .review-field select {width:100%; min-width:0; padding:11px; border:1px solid #cbd5e1; border-radius:8px; background:#fff; font:inherit; color:inherit;}
 .qbo-panel pre {white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px;}
 .qbo-panel .review-actions {margin-bottom:16px; flex-wrap:wrap;}
+
+.bank-records {display:grid; gap:12px; margin:16px 0;}
+.bank-record {border:1px solid #dce3ec; padding:16px; border-radius:10px; min-width:0; overflow-wrap:anywhere;}
+.bank-record h5 {font-size:15px; margin:0 0 10px;}
+.bank-record .review-actions {margin-top:12px;}
+.bank-record select {max-width:100%;}
+#bank-panel h4 {margin:24px 0 12px; font-size:16px;}
+#bank-panel .review-actions > .review-field {flex:1; min-width:180px; max-width:400px;}
+@media(max-width:600px){
+  #bank-panel .review-actions {flex-direction:column; align-items:stretch;}
+  #bank-panel .review-actions .button {flex:none; width:100%; overflow-wrap:normal;}
+  #bank-panel .review-actions > .review-field {flex:none; width:100%; max-width:none;}
+  #bank-panel .section-heading {flex-direction:column; align-items:flex-start;}
+}

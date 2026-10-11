@@ -34,6 +34,7 @@ from app.services.qbo.push_guard import (
 router = APIRouter()
 
 class VendorCreateRequest(BaseModel):
+    expected_realm_id: Optional[str] = None
     display_name: str
 
 class QBOConnectionStatus(BaseModel):
@@ -245,6 +246,9 @@ def create_qbo_vendor(
     request: VendorCreateRequest,
 ):
     client = _get_connected_qbo_client()
+
+    if request.expected_realm_id is not None and request.expected_realm_id != getattr(client, "realm_id", None):
+        raise HTTPException(409, "QBO company changed; reload before creating a vendor")
 
     try:
         result = client.create_vendor(

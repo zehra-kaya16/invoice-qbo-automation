@@ -38,6 +38,7 @@
       try {
         const data = await response.json();
         if (typeof data.detail === "string") detail = data.detail;
+        else if (data.detail && typeof data.detail === "object" && !Array.isArray(data.detail)) detail = data.detail.message || detail;
         else if (Array.isArray(data.detail)) detail = data.detail.map((entry) => entry.msg || "Geçersiz veri").join("; ");
       } catch (_) { /* A proxy may return a non-JSON error body. */ }
       throw new APIError(detail, response.status);
@@ -239,7 +240,7 @@
   }
   function canLeaveReview() {
     if (state.reviewBusy) return false;
-    return !state.dirty || window.confirm("Kaydedilmemiş değişiklikler var. Değişiklikleri bırakıp devam etmek istiyor musun?");
+    return (!state.dirty && !bankChoiceDirty()) || window.confirm("Kaydedilmemiş değişiklikler var. Değişiklikleri bırakıp devam etmek istiyor musun?");
   }
   function reviewControls() {
     const waiting = state.reviewBusy || state.reviewLoading;
@@ -256,9 +257,11 @@
     for (const button of document.querySelectorAll("[data-document-open]")) button.disabled = state.reviewBusy;
     el("approval-status").textContent = state.dirty ? "Kaydedilmemiş değişiklikler" : (state.extraction?.approved ? "Onaylı" : "Onay bekliyor");
     qboControls();
+    bankControls();
     el("approval-status").className = state.extraction?.approved && !state.dirty ? "badge pushed" : "badge";
   }
   function resetReviewState() {
+    resetBank();
     resetQBO();
     state.reviewController?.abort();
     ++state.reviewRequest;
@@ -382,7 +385,7 @@
       summaryRows(record, check, [["check_number", "Çek no"], ["payee", "Alıcı"], ["amount", "Tutar"], ["date", "Tarih"], ["memo", "Açıklama"], ["matched_transaction_id", "Eşleşen QBO işlem ID"]]);
       target.append(record);
     }
-    target.append(node("p", "Ekstre eşleşme ve kategori incelemesi ayrı bir akışta yapılır.", "muted small"));
+    target.append(node("p", "Eşleşme ve kategori kararlarını aşağıdaki ekstre bölümünde incele.", "muted small"));
   }
   function renderReview() {
     const document = state.document, extracted = state.extraction;
@@ -419,6 +422,7 @@
     reviewControls();
   }
   async function loadReview(document, sourceSequence) {
+    resetBank();
     resetQBO();
     state.reviewController?.abort();
     const controller = new AbortController(); state.reviewController = controller;
@@ -438,7 +442,7 @@
       state.reviewNeedsRefresh = true;
       el("review-error").textContent = errorMessage(error); el("review-error").hidden = false;
     } finally {
-      if (requestId === state.reviewRequest) { state.reviewLoading = false; reviewControls(); }
+      if (requestId === state.reviewRequest) { state.reviewLoading = false; reviewControls(); if (state.document?.document_type === "bank_statement") void readBank(); }
     }
   }
   async function refreshReview() {
@@ -481,6 +485,7 @@
       detail(document); renderReview();
       if (document.status !== "failed") el("review-message").textContent = action === "approve" ? "Belge onaylandı." : action === "save" ? (data.validation?.is_valid ? "Değişiklikler kaydedildi. Belgeyi yeniden onayla." : "Değişiklikler kaydedildi. Doğrulama hatalarını düzelt.") : "Veri çıkarma tamamlandı. Alanları kaynakla karşılaştır.";
       await loadDocuments();
+      if (document.document_type === "bank_statement") void readBank();
     } catch (error) {
       state.reviewNeedsRefresh = !(error instanceof APIError) || error.status === 409 || error.status >= 500;
       el("review-message").textContent = "İşlem tamamlanamadı. Hata ayrıntısını kontrol et.";
@@ -492,6 +497,176 @@
       state.reviewBusy = false; reviewControls();
     }
   }
+
+  const bank = {data: null, realm: null, accounts: [], ready: false, loading: false, request: 0, plan: null, uncertain: false};
+  function resetBank() {
+    ++bank.request; bank.data = null; bank.realm = null; bank.accounts = []; bank.ready = false; bank.loading = false; bank.plan = null; bank.uncertain = false;
+    el("bank-plan").hidden = true; el("bank-error").hidden = true; el("bank-result").textContent = "";
+    fillOptions("bank-account", [], "Banka hesabı seç");
+    for (const id of ["bank-matches", "bank-checks", "bank-category-records"]) el(id).replaceChildren();
+  }
+  function bankEditable() {
+    return state.document?.document_type === "bank_statement" && ["extracted", "matched"].includes(state.document.status)
+      && bank.data && !bank.data.locked && !state.reviewNeedsRefresh && !bank.uncertain;
+  }
+  function bankChoiceDirty() { return Boolean(el("bank-panel").querySelector('[data-bank-pending="true"]')); }
+  function bankControls() {
+    el("bank-panel").hidden = state.document?.document_type !== "bank_statement";
+    const waiting = state.reviewBusy || state.reviewLoading || bank.loading, editable = bankEditable();
+    const mappingChanged = bank.ready && (bank.realm !== bank.data?.realm_id || el("bank-account").value !== bank.data?.bank_account?.id);
+    const choicesPending = bankChoiceDirty();
+    const matchesDone = bank.data?.matches?.length > 0 && bank.data.matches.every((item) => ["approved", "rejected", "manual_override"].includes(item.review_status));
+    const vendorsDone = bank.data?.checks?.every((item) => ["matched", "no_vendor_name", "skipped_rejected"].includes(item.vendor_status));
+    el("bank-refresh").disabled = waiting;
+    el("bank-load").disabled = waiting || !editable || choicesPending;
+    el("bank-account").disabled = waiting || !editable || !bank.ready;
+    el("bank-match").disabled = waiting || !editable || !bank.ready || !el("bank-account").value;
+    el("bank-vendors").disabled = waiting || !editable || !matchesDone || mappingChanged || choicesPending;
+    el("bank-categories").disabled = waiting || !editable || !matchesDone || !vendorsDone || mappingChanged || choicesPending;
+    el("bank-preview").disabled = waiting || !editable || !bank.data?.push_ready || mappingChanged || choicesPending;
+    el("bank-push").disabled = waiting || !editable || !bank.plan || bank.plan.revision !== bank.data?.revision || mappingChanged || choicesPending;
+    for (const button of el("bank-panel").querySelectorAll("[data-bank-mutation]")) button.disabled = waiting || !editable || mappingChanged || button.dataset.unavailable === "true";
+    for (const select of el("bank-panel").querySelectorAll("[data-bank-choice]")) select.disabled = waiting || !editable || mappingChanged;
+    if (!waiting) el("bank-message").textContent = bank.uncertain || state.reviewNeedsRefresh ? "İşlem sonucu doğrulanamadı. Ekstre durumunu yenile; QBO yazımını tekrar gönderme."
+      : bank.data?.locked ? "Yazım başlamış veya tamamlanmış. Kayıtlar salt okunur; aşağıdaki QBO işlem ve ek durumlarını kontrol et."
+      : mappingChanged ? "Banka hesabı veya QBO şirketi seçimi değişti. QBO ile eşleştir düğmesiyle eşleşmeyi yenile."
+      : choicesPending ? "Seçilen adayı/hesabı kaydetmeden plan oluşturulamaz." : "Banka hesabını seç, eşleşmeleri incele, satıcıları kontrol et ve kategori kararlarını kaydet.";
+  }
+  function invalidateBankPlan() { bank.plan = null; el("bank-plan").hidden = true; }
+  const reviewLabels = {pending: "İnceleme bekliyor", approved: "Onaylandı", rejected: "Reddedildi", manual_override: "Elle seçildi"};
+  function bankButton(title, action, options, unavailable = false) {
+    const button = node("button", title, "button secondary"); button.type = "button"; button.dataset.bankMutation = "true";
+    button.dataset.unavailable = String(unavailable); button.addEventListener("click", () => bankAction(action, typeof options === "function" ? options() : options)); return button;
+  }
+  function candidateText(candidate) {
+    const txn = candidate.transaction || {};
+    return `${txn.type || ""} · ${txn.id || ""} · ${txn.date || ""} · ${txn.amount ?? ""} · ${txn.description || ""} · puan ${candidate.score ?? "—"}`;
+  }
+  function renderBankWorkflow() {
+    const data = bank.data; if (!data) return;
+    el("bank-binding").textContent = data.realm_id ? `Eşleşmenin şirket ID’si: ${data.realm_id} · Banka: ${data.bank_account?.name || "—"} (${data.bank_account?.id || "—"})`
+      : "Henüz şirket/banka bilgisiyle eşleşme kaydedilmedi. QBO hesaplarını yükleyip eşleştir.";
+    const matchTarget = el("bank-matches"); matchTarget.replaceChildren();
+    if (data.matches === null) matchTarget.append(node("p", "Henüz QBO eşleşmesi yok.", "muted"));
+    for (const item of data.matches || []) {
+      const txn = state.extraction?.bank_statement_data?.transactions[item.transaction_index] || {};
+      const card = node("div", undefined, "bank-record"); card.dataset.matchIndex = String(item.transaction_index);
+      card.append(node("h5", `İşlem ${item.transaction_index + 1} · ${txn.date || ""} · ${txn.amount ?? ""}`), node("p", txn.description || ""), node("p", label(reviewLabels, item.review_status)));
+      card.append(node("p", item.best_match ? `Öneri: ${candidateText(item.best_match)}` : "Uygun QBO önerisi bulunamadı."));
+      if (item.reviewed_match) card.append(node("p", `Kaydedilen seçim: ${candidateText(item.reviewed_match)}`));
+      const select = node("select"); select.dataset.bankChoice = "true"; select.setAttribute("aria-label", `İşlem ${item.transaction_index + 1} QBO adayı`);
+      const empty = node("option", "QBO adayı seç"); empty.value = ""; select.append(empty);
+      for (const candidate of item.candidates || []) {
+        const option = node("option", candidateText(candidate)); option.value = JSON.stringify({qbo_transaction_id: String(candidate.transaction.id), qbo_transaction_type: candidate.transaction.type}); select.append(option);
+      }
+      const actions = node("div", undefined, "review-actions");
+      actions.append(bankButton("Öneriyi onayla", "match-review", {index: item.transaction_index, body: {decision: "approve"}}, !item.matched || !item.best_match),
+        bankButton("Eşleşmeyi reddet", "match-review", {index: item.transaction_index, body: {decision: "reject"}}));
+      const manual = bankButton("Seçilen adayı kaydet", "match-review", () => ({index: item.transaction_index, body: {decision: "manual_override", ...JSON.parse(select.value || "{}")}}), true);
+      select.addEventListener("change", () => { select.dataset.bankPending = String(Boolean(select.value)); invalidateBankPlan(); manual.dataset.unavailable = String(!select.value); bankControls(); });
+      actions.append(manual); card.append(select, actions); matchTarget.append(card);
+    }
+    const checksTarget = el("bank-checks"); checksTarget.replaceChildren(node("h4", `Çek/satıcı kontrolü (${data.checks.length})`));
+    if (!data.checks.length) checksTarget.append(node("p", "Çek görseli yok; çek eki yüklenmeyecek.", "muted"));
+    for (const item of data.checks) {
+      const card = node("div", undefined, "bank-record");
+      const extracted = state.extraction?.bank_statement_data?.check_images[item.check_index] || {};
+      card.append(node("h5", `Çek ${extracted.check_number || item.check_index + 1} · ${item.vendor_name || "Satıcı adı yok"}`));
+      summaryRows(card, {...item, amount: extracted.amount}, [["amount", "Çek tutarı"], ["vendor_status", "Satıcı durumu"], ["qbo_transaction_id", "QBO işlem ID"], ["qbo_transaction_type", "QBO işlem türü"], ["attachment_push_status", "Ek durumu"], ["attachment_id", "Ek ID"], ["attachment_error", "Ek hatası"]]);
+      if (item.vendor_status === "missing" && item.vendor_name) card.append(bankButton("Eksik satıcıyı QBO’da oluştur", "create-vendor", {name: item.vendor_name}));
+      checksTarget.append(card);
+    }
+    const categories = el("bank-category-records"); categories.replaceChildren();
+    if (data.categories === null) categories.append(node("p", "Kategori önerileri henüz oluşturulmadı.", "muted"));
+    else if (!data.categories.length) categories.append(node("p", "İncelenecek Purchase kategorisi yok.", "muted"));
+    for (const item of data.categories || []) {
+      const card = node("div", undefined, "bank-record"); card.dataset.categoryIndex = String(item.transaction_index);
+      card.append(node("h5", `İşlem ${item.transaction_index + 1} · QBO ${item.qbo_transaction_type} ${item.qbo_transaction_id}`), node("p", item.description || ""), node("p", label(reviewLabels, item.review_status)));
+      summaryRows(card, {...item, selected: item.reviewed_category?.name}, [["category_suggestion", "Önerilen hesap"], ["selected", "Kaydedilen hesap"], ["qbo_category_push_status", "Kategori yazım durumu"], ["qbo_category_push_error", "Yazım hatası"]]);
+      const select = node("select"); select.dataset.bankChoice = "true"; select.setAttribute("aria-label", `İşlem ${item.transaction_index + 1} gider hesabı`);
+      const empty = node("option", "Gider hesabı seç"); empty.value = ""; select.append(empty);
+      for (const account of bank.accounts) { const option = node("option", `${account.name} · ${account.id}`); option.value = String(account.id); select.append(option); }
+      const actions = node("div", undefined, "review-actions");
+      actions.append(bankButton("Kategoriyi onayla", "category-review", {index: item.transaction_index, body: {decision: "approve"}}, !item.category_match),
+        bankButton("Kategori yazımını reddet", "category-review", {index: item.transaction_index, body: {decision: "reject"}}));
+      const manual = bankButton("Seçilen hesabı kaydet", "category-review", () => ({index: item.transaction_index, body: {decision: "manual_override", qbo_account_id: select.value}}), true);
+      select.addEventListener("change", () => { select.dataset.bankPending = String(Boolean(select.value)); invalidateBankPlan(); manual.dataset.unavailable = String(!select.value); bankControls(); });
+      actions.append(manual); card.append(select, actions); categories.append(card);
+    }
+    bankControls();
+  }
+  async function readBank(clearError = false) {
+    if (state.document?.document_type !== "bank_statement") return;
+    const id = state.selectedId, source = state.sourceRequest, requestId = ++bank.request;
+    bank.loading = true; invalidateBankPlan(); if (clearError) el("bank-error").hidden = true; bankControls();
+    try {
+      const data = await json(`${pathFor(id)}/bank-workflow`);
+      if (source !== state.sourceRequest || requestId !== bank.request) return;
+      bank.data = data; bank.uncertain = false; state.reviewNeedsRefresh = false;
+      state.document.status = data.status; detail(state.document); renderBankWorkflow();
+    } catch (error) {
+      if (source !== state.sourceRequest || requestId !== bank.request) return;
+      state.reviewNeedsRefresh = true; el("bank-error").textContent = errorMessage(error); el("bank-error").hidden = false;
+    } finally { if (requestId === bank.request) { bank.loading = false; reviewControls(); } }
+  }
+  async function bankAction(action, options = {}) {
+    if (state.reviewBusy || state.reviewLoading || bank.loading || !bankEditable()) return;
+    const mainButton = {load: "bank-load", match: "bank-match", vendors: "bank-vendors", categories: "bank-categories", preview: "bank-preview", push: "bank-push"}[action];
+    if (mainButton && el(mainButton).disabled) return;
+    if (action === "match" && bank.data.matches !== null && !window.confirm("Yeniden eşleşme mevcut eşleşme, satıcı ve kategori kararlarını sıfırlar. Devam edilsin mi?")) return;
+    if (action === "categories" && bank.data.categories !== null && !window.confirm("Kategori önerilerini yeniden oluşturmak kategori kararlarını sıfırlar. Devam edilsin mi?")) return;
+    if (action === "create-vendor" && !window.confirm(`${options.name} satıcısını QuickBooks’ta oluşturmak istiyor musun?`)) return;
+    if (action === "push" && !window.confirm("Önizlemedeki mevcut QBO işlemlerinin kategorilerini güncellemek ve çek eklerini yüklemek istiyor musun?")) return;
+    const id = state.selectedId, plan = bank.plan;
+    state.reviewBusy = true; el("bank-error").hidden = true; el("bank-result").textContent = ""; reviewControls();
+    el("bank-message").textContent = action === "push" ? "QBO aktarımı sürüyor… Tekrar gönderme." : "Ekstre işlemi yürütülüyor…";
+    try {
+      if (action === "load") {
+        bank.ready = false; invalidateBankPlan();
+        const status = await json("/api/qbo/status"); if (!status.connected || !status.company_id) throw new APIError("Önce QBO bağlantısını kur.", 400);
+        const data = await json("/api/qbo/accounts"), after = await json("/api/qbo/status");
+        if (!after.connected || after.company_id !== status.company_id) throw new APIError("QBO şirketi değişti. Hesapları tekrar yükle.", 409);
+        bank.realm = status.company_id; bank.accounts = data.accounts.filter((item) => item.type === "Expense");
+        fillOptions("bank-account", data.accounts.filter((item) => item.type === "Bank"), "Banka hesabı seç");
+        if (bank.data.realm_id === bank.realm && bank.data.bank_account?.id) el("bank-account").value = bank.data.bank_account.id;
+        bank.ready = true; renderBankWorkflow();
+      } else if (action === "preview") {
+        await readBank();
+        if (!bank.data?.push_ready || state.reviewNeedsRefresh) throw new APIError("Ekstre hazır değil. İnceleme kararlarını ve satıcı durumunu kontrol et.", 400);
+        bank.plan = {revision: bank.data.revision, realm: bank.data.realm_id};
+        const target = el("bank-plan"); target.replaceChildren(node("h4", "Ekstre aktarım planı")); target.hidden = false;
+        target.append(node("p", `Şirket: ${bank.data.realm_id} · Banka: ${bank.data.bank_account?.name || "—"}. Yeni Bill/Expense oluşturulmaz.`));
+        for (const item of bank.data.plan.category_updates) target.append(node("p", `İşlem ${item.transaction_index + 1}: Purchase ${item.qbo_transaction_id} → ${item.category_name || item.account_id} (${item.account_id})`));
+        for (const item of bank.data.plan.check_attachments) target.append(node("p", `Çek ${item.check_index + 1}: ${item.qbo_transaction_type} ${item.qbo_transaction_id} kaydına görsel eki.`));
+        target.append(node("p", `${bank.data.plan.category_updates.length} kategori güncellemesi; ${bank.data.plan.check_attachments.length} çek eki. Reddedilen kayıtlar aktarılmaz.`));
+      } else if (action === "create-vendor") {
+        invalidateBankPlan();
+        await json("/api/qbo/vendors", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({display_name: options.name, expected_realm_id: bank.data.realm_id})});
+        await json(`${pathFor(id)}/resolve-vendors`, {method: "POST"}); await readBank();
+      } else {
+        const suffix = {match: "match-to-qbo", vendors: "resolve-vendors", categories: "suggest-categories", push: "push-to-qbo"}[action] || `${action}/${options.index}`;
+        const body = action === "match" ? {bank_account_id: el("bank-account").value, expected_realm_id: bank.realm}
+          : action === "push" ? {attach_documents: true, expected_realm_id: plan.realm, expected_revision: plan.revision} : options.body;
+        invalidateBankPlan();
+        const response = await json(`${pathFor(id)}/${suffix}`, {method: action.endsWith("review") ? "PATCH" : "POST", ...(body ? {headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)} : {})});
+        await readBank(); await loadDocuments();
+        if (action === "push") {
+          el("bank-result").textContent = `${response.categories_updated} kategori güncellendi; ${response.attachments_uploaded} çek eki yüklendi; ${response.categories_skipped} kategori atlandı.`;
+          if (response.errors?.length) { el("bank-error").textContent = response.errors.join("; "); el("bank-error").hidden = false; }
+        }
+      }
+    } catch (error) {
+      invalidateBankPlan(); el("bank-error").textContent = errorMessage(error); el("bank-error").hidden = false;
+      if (action === "load") bank.ready = false;
+      const uncertain = !(error instanceof APIError) || error.status === 409 || error.status >= 500;
+      if (uncertain) { bank.uncertain = true; state.reviewNeedsRefresh = true; }
+      // Read persisted checkpoints after a failed write. Never repeat POST/PATCH automatically.
+      if (action === "push") { await readBank(); await loadDocuments(); }
+    } finally { state.reviewBusy = false; reviewControls(); }
+  }
+  el("bank-refresh").addEventListener("click", () => { if (canLeaveReview()) void readBank(true); });
+  el("bank-account").addEventListener("input", () => { invalidateBankPlan(); bankControls(); });
+  for (const action of ["load", "match", "vendors", "categories", "preview", "push"]) el(`bank-${action}`).addEventListener("click", () => bankAction(action));
 
   // Mapping and preview live only for the currently selected, approved document.
   const qbo = {realm: null, ready: false, plan: null, uncertain: false};
@@ -683,7 +858,7 @@
   el("reset-review").addEventListener("click", () => { state.dirty = false; if (!state.reviewNeedsRefresh) el("review-error").hidden = true; renderReview(); });
   el("add-line-item").addEventListener("click", () => { el("line-items").append(lineItem({description: "", quantity: 1, unit_price: null, amount: null, category: null})); updateDirty(); });
   window.addEventListener("beforeunload", (event) => {
-    if (state.dirty || state.reviewBusy) { event.preventDefault(); event.returnValue = ""; }
+    if (state.dirty || state.reviewBusy || bankChoiceDirty()) { event.preventDefault(); event.returnValue = ""; }
   });
   loadDocuments(0);
   checkQBO();

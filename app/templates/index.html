@@ -111,6 +111,24 @@
           <button id="qbo-push" class="button primary" type="button" disabled>QBO’ya gönder ve kaynağı ekle</button></div>
         <div id="qbo-plan" class="validation-panel" hidden></div>
       </section>
+      <section id="bank-panel" class="qbo-panel" aria-labelledby="bank-heading" hidden>
+        <div class="section-heading"><h3 id="bank-heading">Ekstre eşleşme ve aktarım</h3><button id="bank-refresh" class="button secondary" type="button">Ekstre durumunu yenile</button></div>
+        <p class="muted small">Mevcut QBO işlemlerini incele. Onaylanan Purchase kategorileri güncellenir; varsa çek görselleri mevcut işlemlere eklenir.</p>
+        <p id="bank-message" role="status" aria-live="polite"></p><p id="bank-error" class="error-message" role="alert" hidden></p>
+        <div class="review-actions"><button id="bank-load" class="button secondary" type="button">QBO hesaplarını yükle</button>
+          <label class="review-field"><span>Ekstrenin QBO banka hesabı</span><select id="bank-account"><option value="">Banka hesabı seç</option></select></label>
+          <button id="bank-match" class="button primary" type="button" disabled>QBO ile eşleştir</button></div>
+        <p id="bank-binding" class="muted small"></p>
+        <h4>1. İşlem eşleşmelerini incele</h4><div id="bank-matches" class="bank-records"></div>
+        <div class="review-actions"><button id="bank-vendors" class="button secondary" type="button" disabled>Satıcıları kontrol et</button></div>
+        <div id="bank-checks" class="bank-records"></div>
+        <h4>2. Kategorileri incele</h4><button id="bank-categories" class="button secondary" type="button" disabled>Kategori önerilerini oluştur</button>
+        <div id="bank-category-records" class="bank-records"></div>
+        <h4>3. Aktarımı kontrol et</h4><div class="review-actions">
+          <button id="bank-preview" class="button secondary" type="button" disabled>Ekstre planını önizle</button>
+          <button id="bank-push" class="button primary" type="button" disabled>Onaylanan kategorileri ve çek eklerini aktar</button></div>
+        <div id="bank-plan" class="validation-panel" hidden></div><p id="bank-result" role="status" aria-live="polite"></p>
+      </section>
       <details id="raw-extraction" class="raw-extraction" hidden><summary>Çıkarılan metin</summary><pre id="raw-text"></pre></details>
     </section>
   </main>

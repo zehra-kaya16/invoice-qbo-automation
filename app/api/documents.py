@@ -1,3 +1,4 @@
+import copy
 import os
 import tempfile
 import uuid
@@ -106,6 +107,54 @@ def _ensure_document_can_be_extracted(document: dict) -> None:
         )
     _ensure_workflow_editable(document)
 
+def _ensure_bank_realm(document: dict, client, expected_realm_id=None) -> None:
+    realm = getattr(client, "realm_id", None)
+    stored = document.get("qbo_match_realm_id")
+    if (expected_realm_id is not None and expected_realm_id != realm) or (stored and stored != realm):
+        raise HTTPException(409, "QBO company differs from bank matching; rematch before writing")
+
+
+@router.get("/{document_id}/bank-workflow")
+def get_bank_workflow(document_id: str):
+    """Read a detached bank review snapshot; never call QBO or save it."""
+    document = _load_document(document_id)
+    if document.get("document_type") != DocumentType.BANK_STATEMENT:
+        raise HTTPException(400, "Bank workflow requires a bank statement")
+    locked = False
+    try:
+        _ensure_workflow_editable(document)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        locked = True
+    snapshot = copy.deepcopy(document)
+    blockers = []
+    categories = []
+    checks = []
+    try:
+        _prepare_reviewed_bank_statement_matches(snapshot)
+        _validate_bank_statement_vendors_for_push(snapshot)
+        _validate_bank_statement_check_results(snapshot)
+        categories = _prepare_reviewed_bank_statement_categories(snapshot)
+        checks = [item for item in snapshot.get("check_match_results", []) if item.get("matched")]
+    except HTTPException as exc:
+        blockers.append(exc.detail)
+    return {
+        "id": document_id, "revision": document.get("_revision"),
+        "realm_id": document.get("qbo_match_realm_id"),
+        "bank_account": document.get("qbo_match_bank_account"),
+        "status": document.get("status"), "locked": locked,
+        "matches": document.get("qbo_match_results"),
+        "categories": document.get("category_suggestions"),
+        "checks": [{key: value for key, value in item.items() if key != "image_path"}
+                   for item in snapshot.get("check_match_results", [])],
+        "push_ready": not blockers and not locked and bool(document.get("qbo_match_realm_id")),
+        "blockers": blockers,
+        "plan": {"category_updates": categories, "check_attachments": [
+            {key: value for key, value in item.items() if key != "image_path"} for item in checks]},
+    }
+
+
 class DocumentStatus(BaseModel):
     id: str
     filename: str
@@ -122,6 +171,7 @@ class DocumentStatus(BaseModel):
     qbo_attachment_error: Optional[str] = None
 
 class PushToQBORequest(BaseModel):
+    expected_revision: Optional[int] = None
     expected_realm_id: Optional[str] = None
     create_as: str = "bill"
 
@@ -133,6 +183,7 @@ class PushToQBORequest(BaseModel):
     attach_documents: bool = True
 
 class MatchToQBORequest(BaseModel):
+    expected_realm_id: Optional[str] = None
     bank_account_id: str
 
 def _qbo_attachment_entity_type(
@@ -1597,6 +1648,10 @@ async def push_to_qbo(
         )
 
         client = _get_connected_qbo_client()
+        _ensure_bank_realm(document, client, request.expected_realm_id)
+        if request.expected_revision is not None and request.expected_revision != document.get("_revision"):
+            raise HTTPException(409, "Bank review changed; reload and preview before pushing")
+
 
         # 1. Match review gate
         _prepare_reviewed_bank_statement_matches(
@@ -2094,6 +2149,8 @@ async def match_document_to_qbo(
     client = (
         _get_connected_qbo_client()
     )
+    if request.expected_realm_id is not None and request.expected_realm_id != getattr(client, "realm_id", None):
+        raise HTTPException(409, "QBO company changed; reload bank accounts")
     accounts = client.get_accounts(
         account_type="Bank"
     )
@@ -2339,6 +2396,10 @@ async def match_document_to_qbo(
         - matched_count
     )
 
+    document.pop("category_suggestions", None)
+    document["qbo_match_realm_id"] = getattr(client, "realm_id", None)
+    document["qbo_match_bank_account"] = {"id": str(selected_bank_account["id"]), "name": selected_bank_account["name"]}
+
     # Store result for review.
     # No QBO write happens here.
     document[
@@ -2459,6 +2520,7 @@ async def resolve_bank_statement_vendors(
     client = (
         _get_connected_qbo_client()
     )
+    _ensure_bank_realm(document, client)
 
     _resolve_bank_statement_vendors(
         document=document,
@@ -2596,6 +2658,7 @@ async def suggest_bank_statement_categories(
     )
 
     client = _get_connected_qbo_client()
+    _ensure_bank_realm(document, client)
 
     expense_accounts = (
         client.get_expense_accounts()
@@ -2914,6 +2977,7 @@ async def review_bank_statement_category(
         client = (
             _get_connected_qbo_client()
         )
+        _ensure_bank_realm(document, client)
 
         expense_accounts = (
             client.get_expense_accounts()
@@ -3286,6 +3350,12 @@ async def review_bank_statement_match(
         selected_match[
             "reviewed_match"
         ] = override_match
+
+    # A changed match invalidates every downstream category review and vendor lookup.
+    document.pop("category_suggestions", None)
+    for item in document.get("check_match_results", []):
+        item["vendor_status"] = "not_checked"
+        item["vendor_match"] = None
 
     _save_document(document)
 
