@@ -17,11 +17,49 @@
       </a>
       <div class="connection">
         <span id="qbo-status" class="connection-label" role="status">QuickBooks kontrol ediliyor…</span>
-        <a id="qbo-connect" class="button secondary" href="/api/qbo/connect" hidden>QBO’ya bağlan</a>
+        <button id="qbo-connect" class="button secondary" type="button" hidden>QBO’ya bağlan</button>
+        <button id="qbo-disconnect" class="button secondary" type="button" hidden>QBO bağlantısını kaldır</button>
+        <span id="auth-identity" class="small muted"></span>
+        <button id="auth-logout" class="button secondary" type="button" hidden>Çıkış yap</button>
       </div>
     </div>
   </header>
-  <main id="main" class="workspace">
+  <section id="login-panel" class="workspace auth-card" aria-labelledby="login-heading">
+    <h1 id="login-heading">Hesabına giriş yap</h1>
+    <p class="muted">Belgeler ve QuickBooks bağlantısı şirket hesabına bağlıdır.</p>
+    <form id="login-form" class="auth-form">
+      <label>E-posta<input id="login-email" type="email" autocomplete="username" required maxlength="255"></label>
+      <label>Parola<input id="login-password" type="password" autocomplete="current-password" required maxlength="128"></label>
+      <button id="login-submit" class="button primary" type="submit">Giriş yap</button>
+    </form>
+    <p id="login-error" class="error-message" role="alert" hidden></p>
+  </section>
+  <main id="main" class="workspace" hidden>
+    <details class="account-panel">
+      <summary>Hesap ve şirket kullanıcıları</summary>
+      <form id="password-form" class="auth-form">
+        <h3>Parolanı değiştir</h3>
+        <label>Mevcut parola<input id="password-old" type="password" autocomplete="current-password" required maxlength="128"></label>
+        <label>Yeni parola<input id="password-new" type="password" autocomplete="new-password" required minlength="12" maxlength="128"></label>
+        <label>Yeni parola tekrar<input id="password-repeat" type="password" autocomplete="new-password" required minlength="12" maxlength="128"></label>
+        <button class="button secondary" type="submit">Parolayı değiştir ve çıkış yap</button>
+      </form>
+      <section id="users-panel" hidden>
+        <h3>Şirket kullanıcıları</h3>
+        <button id="users-refresh" class="button secondary" type="button">Kullanıcıları yenile</button>
+        <div id="users-list"></div>
+        <form id="user-create-form" class="auth-form">
+          <h4>Kullanıcı ekle</h4>
+          <label>Ad<input id="user-name" required maxlength="255" autocomplete="off"></label>
+          <label>E-posta<input id="user-email" type="email" required maxlength="255" autocomplete="off"></label>
+          <label>İlk parola<input id="user-password" type="password" autocomplete="new-password" required minlength="12" maxlength="128"></label>
+          <label>Yetki<select id="user-role"><option value="user">Kullanıcı</option><option value="admin">Şirket yöneticisi</option></select></label>
+          <button class="button primary" type="submit">Kullanıcı oluştur</button>
+        </form>
+      </section>
+      <p id="account-message" class="small muted" role="status"></p>
+      <p id="account-error" class="error-message" role="alert" hidden></p>
+    </details>
     <div class="page-heading">
       <div><p class="eyebrow">BELGE ÇALIŞMA ALANI</p><h1>Belgelerin burada.</h1>
         <p class="muted">Fatura, fiş ve ekstrelerini yükle; kayıtlarını ve kaynak dosyalarını görüntüle.</p></div>

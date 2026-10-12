@@ -18,3 +18,21 @@ def isolated_document_database(tmp_path, monkeypatch):
         yield factory
     finally:
         engine.dispose()
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "auth_live: exercise real login, cookies, CSRF and tenant access")
+
+
+@pytest.fixture(autouse=True)
+def authenticated_workflow_actor(request):
+    from app.main import app
+    from tests.auth_helpers import override_authenticated_api
+    old = app.dependency_overrides.copy()
+    if request.node.get_closest_marker("auth_live") is None:
+        override_authenticated_api(app)
+    try:
+        yield
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(old)

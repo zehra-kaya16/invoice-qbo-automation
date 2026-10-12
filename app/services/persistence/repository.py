@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.core import database
+from app.core.auth import current_principal, company_key as authorized_company_key
 from app.models.database import Company, Document
 
 
@@ -40,10 +41,14 @@ class DocumentRepository:
         factory = self.session_factory or database.SessionLocal
         return factory()
 
+    def _scope(self):
+        user = current_principal.get()
+        return (Document.company_id == user.company_id,) if user else ()
+
     def get(self, document_id: str) -> dict | None:
         with self._session() as session:
             row = session.scalar(
-                select(Document).where(Document.api_id == document_id)
+                select(Document).where(Document.api_id == document_id, *self._scope())
             )
             if row is None:
                 return None
@@ -58,9 +63,13 @@ class DocumentRepository:
             return document
 
     def list_summaries(self, company_key: str, limit: int, offset: int) -> dict:
+        company_key = authorized_company_key(company_key)
         company_uuid = str(uuid.uuid5(
             uuid.NAMESPACE_URL, f"invoice-qbo-automation:company:{company_key}"
         ))
+        user = current_principal.get()
+        if user:
+            company_uuid = user.company_id
         with self._session() as session:
             filters = (Document.company_id == company_uuid, Document.api_id.is_not(None))
             total = session.scalar(select(func.count()).select_from(Document).where(*filters))
@@ -83,7 +92,7 @@ class DocumentRepository:
         if not document.get("filename"):
             raise ValueError("Document filename is required")
 
-        company_key = document.get("company_id", "default")
+        company_key = authorized_company_key(document.get("company_id", "default"))
         if not isinstance(company_key, str) or not company_key:
             raise ValueError("Document company_id must be a nonempty string")
 
@@ -110,7 +119,7 @@ class DocumentRepository:
         with self._session() as session:
             try:
                 row = session.scalar(
-                    select(Document).where(Document.api_id == document_id)
+                    select(Document).where(Document.api_id == document_id, *self._scope())
                 )
 
                 if expected_revision is None:
@@ -127,9 +136,12 @@ class DocumentRepository:
                             f"invoice-qbo-automation:company:{company_key}",
                         )
                     )
+                    user = current_principal.get()
+                    if user:
+                        company_uuid = user.company_id
                     company = session.get(Company, company_uuid)
                     if company is None:
-                        company = Company(id=company_uuid, name=company_key)
+                        company = Company(id=company_uuid, name=company_key, api_key=company_key)
                         session.add(company)
                         session.flush()
 

@@ -2,6 +2,8 @@
 "use strict";
 (() => {
   const el = (id) => document.getElementById(id);
+  const auth = {user: null, csrf: null};
+  let accountBusy = false;
   const state = {
     offset: 0, limit: 20, total: 0, uploadBusy: false, listLoading: false,
     listRequest: 0, listController: null, selectedId: null,
@@ -32,7 +34,10 @@
     constructor(message, status) { super(message); this.status = status; }
   }
   async function request(url, options = {}) {
-    const response = await fetch(url, {cache: "no-store", ...options});
+    const headers = new Headers(options.headers || {});
+    if (!["GET", "HEAD"].includes((options.method || "GET").toUpperCase()) && auth.csrf) headers.set("X-CSRF-Token", auth.csrf);
+    const response = await fetch(url, {cache: "no-store", credentials: "same-origin", ...options, headers});
+    if (response.status === 401 && auth.user) { window.location.replace("/"); }
     if (!response.ok) {
       let detail = `İstek başarısız (HTTP ${response.status}).`;
       try {
@@ -96,7 +101,7 @@
     el("documents-table").hidden = true;
     pagination();
     try {
-      const query = new URLSearchParams({company_id: "default", limit: String(state.limit), offset: String(offset)});
+      const query = new URLSearchParams({limit: String(state.limit), offset: String(offset)});
       const data = await json(`/api/documents?${query}`, {signal: controller.signal});
       if (sequence !== state.listRequest) return;
       if (!Array.isArray(data.items) || !Number.isInteger(data.total)) throw new APIError("Belge listesi yanıtı okunamadı.");
@@ -912,7 +917,7 @@
         const normalized = new File([file], file.name, {type: mediaByExtension[extension], lastModified: file.lastModified});
         const form = new FormData();
         form.append("file", normalized);
-        const data = await json("/api/documents/upload?company_id=default&auto_process=false", {method: "POST", body: form});
+        const data = await json("/api/documents/upload?auto_process=false", {method: "POST", body: form});
         if (!data.id) throw new Error("Upload response has no document ID");
         succeeded++;
         result.classList.add("success");
@@ -940,11 +945,12 @@
       el("qbo-status").classList.toggle("connected", data.connected);
       el("qbo-status").textContent = data.connected ? `QBO · ${data.company_name || data.company_id}` : (data.reconnect_required ? "QBO · Yeniden bağlantı gerekli" : "QBO · Bağlı değil");
       el("qbo-connect").textContent = data.reconnect_required ? "Yeniden bağlan" : "QBO’ya bağlan";
-      el("qbo-connect").hidden = data.connected;
+      el("qbo-connect").hidden = data.connected || auth.user?.role !== "admin";
+      el("qbo-disconnect").hidden = !data.connected || auth.user?.role !== "admin";
     } catch (error) {
       el("qbo-status").textContent = "QBO · Bağlantı durumu okunamadı";
       el("qbo-status").title = errorMessage(error);
-      el("qbo-connect").hidden = false;
+      el("qbo-connect").hidden = auth.user?.role !== "admin";
     }
   }
   el("choose-files").addEventListener("click", () => el("file-input").click());
@@ -972,6 +978,81 @@
   window.addEventListener("beforeunload", (event) => {
     if (state.dirty || state.reviewBusy || bankChoiceDirty()) { event.preventDefault(); event.returnValue = ""; }
   });
-  loadDocuments(0);
-  checkQBO();
+  function accountControls(busy) {
+    accountBusy = busy;
+    for (const field of document.querySelectorAll(".account-panel button,.account-panel input,.account-panel select")) field.disabled = busy;
+  }
+  async function accountAction(operation) {
+    if (accountBusy || state.reviewBusy || state.uploadBusy) return;
+    accountControls(true); el("account-error").hidden = true;
+    try { await operation(); } catch (error) { el("account-error").textContent = errorMessage(error); el("account-error").hidden = false; }
+    finally { accountControls(false); }
+  }
+  async function loadUsers() {
+    if (auth.user?.role !== "admin") return;
+    const data = await json("/api/auth/users"); el("users-list").replaceChildren();
+    for (const user of data.items) {
+      const card = node("div"); card.append(node("p", `${user.name} · ${user.email} · ${user.role === "admin" ? "Yönetici" : "Kullanıcı"} · ${user.is_active ? "Aktif" : "Devre dışı"}`));
+      if (user.id !== auth.user.user_id) {
+        const actions = node("div", undefined, "review-actions");
+        for (const [title, body] of [[user.is_active ? "Devre dışı bırak" : "Etkinleştir", {is_active: !user.is_active}], [user.role === "admin" ? "Kullanıcı yap" : "Yönetici yap", {role: user.role === "admin" ? "user" : "admin"}]]) {
+          const button = node("button", title, "button secondary");button.type="button";
+          button.addEventListener("click", () => accountAction(async () => {
+            if (!window.confirm(`${user.email}: ${title}? Bu kullanıcının mevcut oturumları kapatılacak.`)) return;
+            await json(`/api/auth/users/${encodeURIComponent(user.id)}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});await loadUsers();
+          }));actions.append(button);
+        }
+        card.append(actions);
+      }
+      el("users-list").append(card);
+    }
+  }
+  el("users-refresh").addEventListener("click", () => accountAction(loadUsers));
+  el("user-create-form").addEventListener("submit", event => {
+    event.preventDefault();void accountAction(async () => {
+      await json("/api/auth/users", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:el("user-name").value.trim(),email:el("user-email").value.trim(),password:el("user-password").value,role:el("user-role").value})});
+      el("user-create-form").reset();el("account-message").textContent="Kullanıcı bu şirket için oluşturuldu.";await loadUsers();
+    });
+  });
+  el("password-form").addEventListener("submit", event => {
+    event.preventDefault();void accountAction(async () => {
+      if (el("password-new").value !== el("password-repeat").value) throw new APIError("Yeni parolalar aynı olmalı.");
+      if (!canLeaveReview() || !window.confirm("Parola değişince bütün oturumların kapanacak. Devam edilsin mi?")) return;
+      await json("/api/auth/password", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({old_password:el("password-old").value,password:el("password-new").value})});window.location.replace("/");
+    });
+  });
+  el("auth-logout").addEventListener("click", () => {
+    if (state.reviewBusy || state.uploadBusy || accountBusy || !canLeaveReview()) return;
+    void accountAction(async () => { await json("/api/auth/logout",{method:"POST"});window.location.replace("/"); });
+  });
+  el("qbo-connect").addEventListener("click", () => {
+    if (!canLeaveReview()) return;
+    void accountAction(async () => { const data=await json("/api/qbo/connect",{method:"POST"});window.location.assign(data.authorization_url); });
+  });
+  el("qbo-disconnect").addEventListener("click", () => {
+    if (state.reviewBusy || state.uploadBusy || !canLeaveReview() || !window.confirm("Bu şirketin kayıtlı QuickBooks bağlantısı kaldırılacak. Devam edilsin mi?")) return;
+    void accountAction(async () => { await json("/api/qbo/disconnect",{method:"POST"});window.location.reload(); });
+  });
+  el("login-form").addEventListener("submit", async event => {
+    event.preventDefault();el("login-submit").disabled=true;el("login-error").hidden=true;
+    try {
+      await json("/api/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:el("login-email").value.trim(),password:el("login-password").value})});
+      el("login-password").value="";window.location.reload();
+    } catch (error) { el("login-error").textContent=errorMessage(error);el("login-error").hidden=false; }
+    finally { el("login-submit").disabled=false; }
+  });
+  async function initializeSession() {
+    try {
+      auth.user=await json("/api/auth/me");auth.csrf=auth.user.csrf_token;
+      el("login-panel").hidden=true;el("main").hidden=false;el("auth-logout").hidden=false;
+      el("auth-identity").textContent=`${auth.user.company.name} · ${auth.user.email}`;
+      el("users-panel").hidden=auth.user.role!=="admin";
+      await Promise.all([loadDocuments(0),checkQBO()]);
+      if (auth.user.role==="admin") await accountAction(loadUsers);
+    } catch (error) {
+      el("main").hidden=true;el("login-panel").hidden=false;
+      if (error.status!==401) { el("login-error").textContent=errorMessage(error);el("login-error").hidden=false; }
+    }
+  }
+  void initializeSession();
 })();

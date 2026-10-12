@@ -1,4 +1,4 @@
-"""Encrypted OAuth storage for the current local default company."""
+"""Encrypted OAuth storage scoped to the authenticated company and OAuth session."""
 import hashlib
 import uuid
 from datetime import timedelta
@@ -7,6 +7,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import delete, select, update
 
 from app.core import database
+from app.core.auth import current_principal
 from app.core.config import settings
 from app.models.database import Company, QBOConnection, QBOOAuthAttempt, utc_now
 
@@ -24,7 +25,8 @@ class QBOConnectionRepository:
         self.factory = session_factory
         self.environment = settings.qbo_environment
         self.fingerprint = hashlib.sha256((settings.qbo_client_id or "").encode()).hexdigest()
-        self.company_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "invoice-qbo-automation:company:default"))
+        self.user = current_principal.get()
+        self.company_id = self.user.company_id if self.user else str(uuid.uuid5(uuid.NAMESPACE_URL, "invoice-qbo-automation:company:default"))
 
     def session(self):
         return (self.factory or database.SessionLocal)()
@@ -37,6 +39,13 @@ class QBOConnectionRepository:
 
     def scope(self, model):
         return (model.environment == self.environment, model.client_fingerprint == self.fingerprint)
+
+    def oauth_scope(self):
+        return (*self.scope(QBOOAuthAttempt), QBOOAuthAttempt.company_id == self.company_id)
+
+    def oauth_binding(self):
+        return (QBOOAuthAttempt.user_id == (self.user.user_id if self.user else None),
+                QBOOAuthAttempt.session_hash == (self.user.session_hash if self.user else None))
 
     def connection_scope(self):
         return (*self.scope(QBOConnection), QBOConnection.company_id == self.company_id)
@@ -60,16 +69,20 @@ class QBOConnectionRepository:
         self.cipher()  # Fail before redirecting to Intuit.
         with self.session() as session, session.begin():
             session.execute(delete(QBOOAuthAttempt).where(QBOOAuthAttempt.expires_at < utc_now()))
-            session.execute(update(QBOOAuthAttempt).where(*self.scope(QBOOAuthAttempt),
-                QBOOAuthAttempt.status.in_(["pending", "exchanging"])).values(status="cancelled"))
-            session.add(QBOOAuthAttempt(state_hash=self.state_hash(state), environment=self.environment,
+            session.execute(update(QBOOAuthAttempt).where(*self.oauth_scope(),
+                *self.oauth_binding(), QBOOAuthAttempt.status.in_(["pending", "exchanging"])).values(status="cancelled"))
+            if session.get(Company, self.company_id) is None:
+                session.add(Company(id=self.company_id, name="default", api_key="default"))
+                session.flush()
+            session.add(QBOOAuthAttempt(company_id=self.company_id, user_id=self.user.user_id if self.user else None,
+                session_hash=self.user.session_hash if self.user else None, state_hash=self.state_hash(state), environment=self.environment,
                 client_fingerprint=self.fingerprint, status="pending", expires_at=utc_now() + timedelta(minutes=10)))
 
     def claim_oauth(self, state):
         self.cipher()
         with self.session() as session, session.begin():
             result = session.execute(update(QBOOAuthAttempt).where(
-                QBOOAuthAttempt.state_hash == self.state_hash(state), *self.scope(QBOOAuthAttempt),
+                QBOOAuthAttempt.state_hash == self.state_hash(state), *self.oauth_scope(), *self.oauth_binding(),
                 QBOOAuthAttempt.status == "pending", QBOOAuthAttempt.expires_at > utc_now()
             ).values(status="exchanging"))
             if result.rowcount != 1:
@@ -81,13 +94,13 @@ class QBOConnectionRepository:
             raise QBOStorageError("QuickBooks returned incomplete connection data")
         with self.session() as session, session.begin():
             result = session.execute(update(QBOOAuthAttempt).where(
-                QBOOAuthAttempt.state_hash == self.state_hash(state), *self.scope(QBOOAuthAttempt),
+                QBOOAuthAttempt.state_hash == self.state_hash(state), *self.oauth_scope(), *self.oauth_binding(),
                 QBOOAuthAttempt.status == "exchanging"
             ).values(status="completed"))
             if result.rowcount != 1:
                 raise QBOConnectionConflict("OAuth connection was cancelled; connect again")
             if session.get(Company, self.company_id) is None:
-                session.add(Company(id=self.company_id, name="default"))
+                session.add(Company(id=self.company_id, name="default", api_key="default"))
                 session.flush()
             row = session.scalar(select(QBOConnection).where(QBOConnection.realm_id == client.realm_id))
             if row is not None and row.company_id != self.company_id:
@@ -150,6 +163,6 @@ class QBOConnectionRepository:
 
     def disconnect(self):
         with self.session() as session, session.begin():
-            session.execute(update(QBOOAuthAttempt).where(*self.scope(QBOOAuthAttempt)).values(status="cancelled"))
+            session.execute(update(QBOOAuthAttempt).where(*self.oauth_scope()).values(status="cancelled"))
             session.execute(update(QBOConnection).where(*self.connection_scope()).values(is_active=False,
                 access_token=None, refresh_token=None, token_expires_at=None, token_state="ready", revision=QBOConnection.revision + 1))

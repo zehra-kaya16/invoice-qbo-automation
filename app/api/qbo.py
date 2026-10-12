@@ -9,7 +9,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.models.database import utc_now
 from app.services.persistence.qbo_repository import QBOConnectionRepository, QBOStorageError, QBOConnectionConflict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from app.core.auth import require_admin
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -95,9 +96,7 @@ class QBOPlanPreviewResponse(BaseModel):
     plan: dict
     currency_check: dict
 
-# The database is authoritative; this global only caches an SDK instance.
-qbo_client: Optional[QBOClient] = None
-company_info: Optional[dict] = None
+# Each request restores its own SDK instance from company-scoped storage.
 
 
 def _storage_call(operation, *args):
@@ -112,14 +111,11 @@ def _storage_call(operation, *args):
 
 
 def _get_qbo_client() -> QBOClient:
-    global qbo_client
     if not settings.qbo_client_id or not settings.qbo_client_secret:
         raise HTTPException(status_code=500, detail="QBO_CLIENT_ID and QBO_CLIENT_SECRET must be configured")
-    if (qbo_client is None or qbo_client.client_id != settings.qbo_client_id
-            or qbo_client.environment != settings.qbo_environment):
-        qbo_client = QBOClient(client_id=settings.qbo_client_id, client_secret=settings.qbo_client_secret,
-            redirect_uri=settings.qbo_redirect_uri, environment=settings.qbo_environment)
-    return qbo_client
+    # SDK tokens must never be shared across simultaneous company requests.
+    return QBOClient(client_id=settings.qbo_client_id, client_secret=settings.qbo_client_secret,
+        redirect_uri=settings.qbo_redirect_uri, environment=settings.qbo_environment)
 
 
 def _restore_connection(force_refresh=False) -> tuple[QBOClient, dict]:
@@ -157,15 +153,15 @@ def _get_connected_qbo_client() -> QBOClient:
     return _restore_connection()[0]
 
 
-@router.get("/connect")
+@router.post("/connect", dependencies=[Depends(require_admin)])
 async def connect_qbo():
     repository = QBOConnectionRepository()
     state = secrets.token_urlsafe(32)
     _storage_call(repository.begin_oauth, state)
-    return RedirectResponse(url=_get_qbo_client().get_auth_url(state=state))
+    return {"authorization_url": _get_qbo_client().get_auth_url(state=state)}
 
 
-@router.get("/callback")
+@router.get("/callback", dependencies=[Depends(require_admin)])
 async def qbo_callback(code: str, state: str, realmId: str):
     repository = QBOConnectionRepository()
     try:
@@ -205,7 +201,7 @@ async def qbo_status():
         company_id=record["realm_id"], expires_at=client.token_expires_at.isoformat() + "Z")
 
 
-@router.post("/refresh", response_model=QBOConnectionStatus)
+@router.post("/refresh", response_model=QBOConnectionStatus, dependencies=[Depends(require_admin)])
 async def refresh_qbo():
     client, record = _restore_connection(force_refresh=True)
     return QBOConnectionStatus(connected=True, company_name=record["company_name"],
@@ -376,13 +372,10 @@ async def get_invoice_qbo_options(
     )
 
 
-@router.post("/disconnect")
+@router.post("/disconnect", dependencies=[Depends(require_admin)])
 async def disconnect_qbo():
     """Clear stored credentials locally; this does not revoke access at Intuit."""
-    global qbo_client, company_info
     _storage_call(QBOConnectionRepository().disconnect)
-    qbo_client = None
-    company_info = None
     return {"status": "disconnected"}
 
 @router.post(

@@ -66,16 +66,21 @@ def oauth(monkeypatch):
     monkeypatch.setattr(settings, "qbo_environment", "sandbox")
     monkeypatch.setattr(settings, "qbo_token_encryption_key", Fernet.generate_key().decode())
     monkeypatch.setattr(api, "QBOClient", FakeOAuthClient)
-    monkeypatch.setattr(api, "qbo_client", None)
     FakeOAuthClient.exchanges = FakeOAuthClient.refreshes = 0
     FakeOAuthClient.fail_refresh = FakeOAuthClient.fail_profile = False
-    return TestClient(app)
+    from app.core.auth import current_principal
+    from tests.auth_helpers import TEST_PRINCIPAL
+    token = current_principal.set(TEST_PRINCIPAL)
+    try:
+        yield TestClient(app)
+    finally:
+        current_principal.reset(token)
 
 
 def start(client):
-    response = client.get("/api/qbo/connect", follow_redirects=False)
-    assert response.status_code == 307, response.text
-    return parse_qs(urlparse(response.headers["location"]).query)["state"][0]
+    response = client.post("/api/qbo/connect")
+    assert response.status_code == 200, response.text
+    return parse_qs(urlparse(response.json()["authorization_url"]).query)["state"][0]
 
 
 def callback(client, state):
@@ -102,6 +107,8 @@ qbo.QBOClient = FakeOAuthClient
 qbo.qbo_client = None
 from app.main import app
 from fastapi.testclient import TestClient
+from tests.auth_helpers import override_authenticated_api
+override_authenticated_api(app)
 response = TestClient(app).request(sys.argv[1], sys.argv[2], params=json.loads(sys.argv[3]))
 print(json.dumps({"status": response.status_code, "body": response.json()}))
 '''
@@ -224,6 +231,7 @@ def test_refresh_claim_conflict_and_disconnect_prevent_resurrection(oauth):
     with pytest.raises(QBOConnectionConflict):
         repository.claim_refresh(record)
     client = api._get_qbo_client()
+    client.set_tokens(record["access_token"], record["refresh_token"], record["realm_id"], record["expires_at"])
     oauth.post("/api/qbo/disconnect")
     with pytest.raises(QBOConnectionConflict):
         repository.finish_refresh(record, revision, client)
@@ -265,7 +273,7 @@ def test_connection_is_bound_to_environment_and_client(oauth, monkeypatch, field
 @pytest.mark.parametrize("key", [None, "invalid-key"])
 def test_missing_or_invalid_key_blocks_connect(oauth, monkeypatch, key):
     monkeypatch.setattr(settings, "qbo_token_encryption_key", key)
-    assert oauth.get("/api/qbo/connect", follow_redirects=False).status_code == 503
+    assert oauth.post("/api/qbo/connect").status_code == 503
     assert FakeOAuthClient.exchanges == 0
 
 

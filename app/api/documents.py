@@ -1,3 +1,4 @@
+from app.core.auth import company_key as authorized_company_key, current_principal
 from datetime import datetime, timezone
 import uuid
 import copy
@@ -207,10 +208,11 @@ def _qbo_attachment_entity_type(
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
-    company_id: str = "default",
+    company_id: Optional[str] = None,
     auto_process: bool = True,
     background_tasks: BackgroundTasks = None,
 ):
+        company_id = authorized_company_key(company_id)
         allowed_types = [
         "application/pdf",
         "image/png",
@@ -253,8 +255,9 @@ async def upload_document(
         _save_document(document)
         if auto_process and background_tasks:
             background_tasks.add_task(
-                process_document,
+                _process_document_owned,
                 document_id,
+                current_principal.get(),
             )
 
         return DocumentUploadResponse(
@@ -287,12 +290,12 @@ class DocumentListResponse(BaseModel):
 # Static collection route must precede /{document_id}.
 @router.get("", response_model=DocumentListResponse)
 async def list_documents(
-    company_id: str = Query("default", min_length=1, max_length=100),
+    company_id: Optional[str] = Query(None, min_length=1, max_length=100),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
     try:
-        return document_repository.list_summaries(company_id, limit, offset)
+        return document_repository.list_summaries(authorized_company_key(company_id), limit, offset)
     except SQLAlchemyError as exc:
         raise HTTPException(503, "Document database is unavailable") from exc
 
@@ -352,6 +355,15 @@ async def extract_document(document_id: str):
     document = _load_document(document_id)
 
     return _build_extraction_response(document)
+
+async def _process_document_owned(document_id, principal):
+    # Background task ownership does not depend on dependency cleanup timing.
+    token = current_principal.set(principal)
+    try:
+        await process_document(document_id)
+    finally:
+        current_principal.reset(token)
+
 
 async def process_document(document_id: str):
 

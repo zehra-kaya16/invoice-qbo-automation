@@ -32,7 +32,7 @@ def test_collection_pagination_company_and_no_binary(isolated_document_database)
     other_page = client.get("/api/documents", params={"limit": 1, "offset": 1}).json()
     assert result["items"][0]["id"] != other_page["items"][0]["id"]
     assert set(result["items"][0]) == {"id", "filename", "status", "document_type", "error"}
-    assert client.get("/api/documents", params={"company_id": "other"}).json()["total"] == 1
+    assert client.get("/api/documents", params={"company_id": "other"}).status_code == 403
     restarted = restart_request(isolated_document_database, "GET", "/api/documents")
     assert restarted["status"] == 200
     assert restarted["body"]["total"] == 2

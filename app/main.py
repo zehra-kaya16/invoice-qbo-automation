@@ -1,10 +1,11 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, Request
+from app.core.auth import company_access
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import documents, health, qbo, recovery
+from app.api import documents, health, qbo, recovery, auth
 
 app = FastAPI(
     title="Invoice QBO Automation",
@@ -13,17 +14,20 @@ app = FastAPI(
 )
 
 app.include_router(health.router, tags=["Health"])
+app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(
     documents.router,
     prefix="/api/documents",
     tags=["Documents"],
+    dependencies=[Depends(company_access)],
 )
 app.include_router(
     qbo.router,
     prefix="/api/qbo",
     tags=["QuickBooks"],
+    dependencies=[Depends(company_access)],
 )
-app.include_router(recovery.router, prefix="/api/documents", tags=["QBO recovery"])
+app.include_router(recovery.router, prefix="/api/documents", tags=["QBO recovery"], dependencies=[Depends(company_access)])
 
 # Resolve paths relative to this module, including on Windows.
 app_directory = Path(__file__).resolve().parent
@@ -44,3 +48,13 @@ async def api_info():
         "status": "running",
         "docs": "/docs",
     }
+
+@app.middleware("http")
+async def private_responses(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response

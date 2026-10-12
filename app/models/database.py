@@ -41,6 +41,7 @@ class Company(Base):
     
     id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
     name = Column(String(255), nullable=False)
+    api_key = Column(String(100), unique=True, nullable=True)
     email = Column(String(255))
     created_at = Column(DateTime, default=utc_now)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)    
@@ -117,6 +118,24 @@ class QBOOAuthAttempt(Base):
     client_fingerprint = Column(String(64), nullable=False)
     status = Column(String(20), nullable=False, default="pending")
     expires_at = Column(DateTime, nullable=False)
+    company_id = Column(UUID(as_uuid=False), ForeignKey("companies.id"), nullable=True)
+    user_id = Column(String(36), nullable=True)
+    session_hash = Column(String(64), nullable=True)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    token_hash = Column(String(64), primary_key=True)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=False)
+    csrf_token = Column(String(64), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
+class AuthLoginAttempt(Base):
+    __tablename__ = "auth_login_attempts"
+    id = Column(Integer, primary_key=True)
+    subject_hash = Column(String(64), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False)
 
 
 class Document(Base):

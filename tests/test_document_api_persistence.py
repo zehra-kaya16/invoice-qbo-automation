@@ -48,6 +48,8 @@ def restart_request(factory, method, path, payload=None):
 import json, sys
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.auth_helpers import override_authenticated_api
+override_authenticated_api(app)
 request = json.loads(sys.stdin.read())
 response = TestClient(app).request(**request)
 print(json.dumps({"status": response.status_code, "body": response.json()}))

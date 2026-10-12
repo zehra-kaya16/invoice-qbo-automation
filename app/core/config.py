@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     # Database
     database_url: Optional[str] = None
 
+    # Browser sessions: enable Secure cookies when served over HTTPS.
+    auth_cookie_secure: bool = False
+    auth_session_hours: int = 12
+
     # Redis
     redis_url: Optional[str] = None
 
