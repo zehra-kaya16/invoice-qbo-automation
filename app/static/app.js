@@ -58,7 +58,7 @@
     const days = Number(el("export-days").value);
     if (!Number.isInteger(days) || days < 1 || days > 365) return;
     const format = el("export-format").value;
-    if (!["csv", "json"].includes(format)) return;
+    if (!["csv", "json", "excel"].includes(format)) return;
     const params = new URLSearchParams({days: String(days)});
     if (el("export-status").value) params.set("status", el("export-status").value);
     if (el("export-type").value) params.set("document_type", el("export-type").value);
@@ -67,7 +67,7 @@
     try {
       const response = await request(`/api/export/${format}?${params}`);
       const blob = await response.blob();
-      const filename = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] || `receipt-ai-export.${format}`;
+      const filename = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] || `receipt-ai-export.${format === "excel" ? "xlsx" : format}`;
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a"); link.href = url; link.download = filename;
       document.body.append(link); link.click(); link.remove();
@@ -824,7 +824,7 @@
     qbo.realm = null; qbo.ready = false; qbo.uncertain = false; invalidatePlan();
     el("qbo-error").hidden = true;
     for (const [id, title] of [["qbo-vendor", "Satıcı seç"], ["qbo-account", "Gider hesabı seç"], ["qbo-bank", "Banka hesabı seç"]]) fillOptions(id, [], title);
-    el("qbo-description").value = ""; el("qbo-suggestions").textContent = "";
+    el("qbo-import-tax-code").value = ""; el("qbo-description").value = ""; el("qbo-suggestions").textContent = "";
     el("qbo-create-as").value = "bill";
   }
   function qboEligible() {
@@ -845,6 +845,7 @@
     const body = qboPayload();
     el("qbo-preview").disabled = waiting || !allowed || !qbo.ready || !body.vendor_id || !body.account_id
       || (body.create_as === "expense" && !body.bank_account_id);
+    el("qbo-import-draft").disabled = waiting || !allowed || !qbo.ready || state.document?.document_type !== "invoice" || body.create_as !== "bill" || !body.vendor_id || !body.account_id;
     el("qbo-push").disabled = waiting || !allowed || !qbo.plan || JSON.stringify(body) !== qbo.plan.signature;
     const doc = state.document;
     el("qbo-result").replaceChildren(); el("qbo-result").hidden = !workflowLocked();
@@ -919,6 +920,22 @@
       }
     } finally { state.reviewBusy = false; reviewControls(); void readRecovery(); }
   }
+  el("qbo-import-draft").addEventListener("click", async () => {
+    if (el("qbo-import-draft").disabled || !qboEligible()) return;
+    const id = state.selectedId, body = qboPayload(), taxCode = el("qbo-import-tax-code").value.trim();
+    state.reviewBusy = true; reviewControls(); el("qbo-error").hidden = true;
+    try {
+      const snapshot = await json(`${pathFor(id)}/recovery`);
+      const params = new URLSearchParams({document_id:id, vendor_id:body.vendor_id, account_id:body.account_id,
+        expected_revision:String(snapshot.revision), expected_realm_id:body.expected_realm_id, tax_code:taxCode});
+      const response = await request(`/api/export/qbo-import?${params}`);
+      const blob = await response.blob(), url = URL.createObjectURL(blob);
+      const link = document.createElement("a"); link.href = url; link.download = "qbo-bill-import-draft.csv";
+      document.body.append(link); link.click(); link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+      el("qbo-message").textContent = "Bill CSV taslağı indirildi. Bu indirme QBO işlemi oluşturmadı.";
+    } catch (error) { el("qbo-error").textContent = errorMessage(error); el("qbo-error").hidden = false; }
+    finally { state.reviewBusy = false; reviewControls(); }
+  });
   for (const id of ["qbo-create-as", "qbo-vendor", "qbo-account", "qbo-bank", "qbo-description"]) {
     el(id).addEventListener("input", () => { invalidatePlan(); qboControls(); });
   }

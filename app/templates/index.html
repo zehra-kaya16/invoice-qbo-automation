@@ -92,7 +92,7 @@
           <option value="bank_statement">Banka ekstresi</option><option value="check">Çek</option>
           <option value="credit_card_statement">Kredi kartı ekstresi</option><option value="unknown">Bilinmiyor</option>
         </select></label>
-        <label>Biçim<select id="export-format"><option value="csv">CSV — belge özeti</option><option value="json">JSON — ayrıntılı veriler</option></select></label>
+        <label>Biçim<select id="export-format"><option value="csv">CSV — belge özeti</option><option value="json">JSON — ayrıntılı veriler</option><option value="excel">Excel — belge özeti (.xlsx)</option></select></label>
         <button id="export-submit" class="button secondary" type="submit">Verileri indir</button>
       </form>
       <p id="export-message" class="small muted" role="status" aria-live="polite"></p>
@@ -163,12 +163,15 @@
             <label class="review-field"><span>QBO satıcısı</span><select id="qbo-vendor"><option value="">Satıcı seç</option></select></label>
             <label class="review-field"><span>Gider hesabı</span><select id="qbo-account"><option value="">Gider hesabı seç</option></select></label>
             <label id="qbo-bank-label" class="review-field" hidden><span>Ödemenin çıktığı banka hesabı</span><select id="qbo-bank"><option value="">Banka hesabı seç</option></select></label>
+            <label class="review-field"><span>Bill CSV için vergi kodu (vergisiz faturada boş bırakılabilir)</span><input id="qbo-import-tax-code" type="text" maxlength="100"></label>
             <label class="review-field"><span>İşlem açıklaması (isteğe bağlı)</span><input id="qbo-description" type="text"></label>
           </div>
           <p id="qbo-suggestions" class="muted small"></p>
         </fieldset>
         <div class="review-actions"><button id="qbo-preview" class="button secondary" type="button" disabled>Planı önizle</button>
           <button id="qbo-push" class="button primary" type="button" disabled>QBO’ya gönder ve kaynağı ekle</button></div>
+        <button id="qbo-import-draft" class="button secondary" type="button" disabled>Bill CSV taslağını indir</button>
+        <p class="muted small">CSV taslağı: yalnız onaylı fatura ve Bill seçimi. QBO’da kayıt veya kaynak eki oluşturmaz. İçe aktarma öncesi QBO örnek dosyası, vergi eşlemesi ve mükerrer kayıt kontrolü gerekir.</p>
         <div id="qbo-plan" class="validation-panel" hidden></div>
       </section>
       <section id="bank-panel" class="qbo-panel" aria-labelledby="bank-heading" hidden>

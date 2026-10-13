@@ -130,6 +130,15 @@ def _headers(extension):
     return {"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"}
 
 
+def _summary_values(document):
+    extracted = document["extracted_data"] or {}
+    return [document["id"], document["filename"], document["created_at"], document["status"],
+            document["document_type"], extracted.get("vendor"), extracted.get("total_amount"),
+            extracted.get("currency"), extracted.get("date"), extracted.get("category_suggestion"),
+            document["approved"], document["qbo_transaction_id"], document["qbo_transaction_type"],
+            document["qbo_push_state"], document["qbo_attachment_id"], document["qbo_attachment_push_status"]]
+
+
 @router.get("/json")
 def export_json(data: dict = Depends(report)):
     return Response(json.dumps(data, ensure_ascii=False, indent=2), media_type="application/json",
@@ -142,13 +151,113 @@ def export_csv(data: dict = Depends(report)):
     writer = csv.writer(output)
     writer.writerow(CSV_COLUMNS)
     for document in data["documents"]:
-        extracted = document["extracted_data"] or {}
-        values = [document["id"], document["filename"], document["created_at"], document["status"],
-                  document["document_type"], extracted.get("vendor"), extracted.get("total_amount"),
-                  extracted.get("currency"), extracted.get("date"), extracted.get("category_suggestion"),
-                  document["approved"], document["qbo_transaction_id"], document["qbo_transaction_type"],
-                  document["qbo_push_state"], document["qbo_attachment_id"], document["qbo_attachment_push_status"]]
-        writer.writerow([_csv_cell(value) for value in values])
+        writer.writerow([_csv_cell(value) for value in _summary_values(document)])
     # UTF-8 BOM preserves Turkish characters in spreadsheet applications.
     return Response(("\ufeff" + output.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
                     headers=_headers("csv"))
+
+
+@router.get("/excel")
+def export_excel(data: dict = Depends(report)):
+    from openpyxl import Workbook
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    from openpyxl.styles import Font, PatternFill
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Documents"
+    for row_number, values in enumerate([CSV_COLUMNS] + [_summary_values(d) for d in data["documents"]], 1):
+        for column, value in enumerate(values, 1):
+            text = "" if value is None else str(value)
+            if len(text) > 32767:
+                raise HTTPException(422, "An export value exceeds the Excel cell text limit")
+            if ILLEGAL_CHARACTERS_RE.search(text):
+                raise HTTPException(422, "An export value contains characters unsupported by Excel; use JSON")
+            cell = sheet.cell(row_number, column, text)
+            # Keep precision and IDs exactly; never interpret extracted text as a formula.
+            cell.data_type = "s"
+            if row_number == 1:
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill("solid", fgColor="245BE5")
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for column in sheet.columns:
+        sheet.column_dimensions[column[0].column_letter].width = min(50, max(12, max(len(str(c.value or "")) for c in column) + 2))
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return Response(output.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers=_headers("xlsx"))
+
+
+@router.get("/qbo-import")
+def export_qbo_import(
+    document_id: str = Query(..., min_length=1, max_length=100),
+    vendor_id: str = Query(..., min_length=1, max_length=100),
+    account_id: str = Query(..., min_length=1, max_length=100),
+    expected_revision: int = Query(..., ge=1),
+    expected_realm_id: str = Query(..., min_length=1, max_length=100),
+    tax_code: str = Query("", max_length=100),
+):
+    """One approved invoice -> Bill import draft; never records a QBO write."""
+    from app.api.documents import _load_document, _ensure_workflow_editable
+    from app.api.qbo import _get_connected_qbo_client
+    from app.services.qbo.currency_guard import check_document_currency
+    from app.services.qbo.push_guard import ensure_invoice_can_start_push, QBOPushGuardError
+    document = _load_document(document_id)
+    if document.get("_revision") != expected_revision:
+        raise HTTPException(409, "Document changed; reload before exporting")
+    if document.get("document_type") != "invoice":
+        raise HTTPException(400, "Bill CSV draft supports invoices only; paid receipts are Expenses")
+    _ensure_workflow_editable(document)
+    if document.get("status") != "extracted":
+        raise HTTPException(409, "Bill CSV requires an extracted, approved invoice")
+    try:
+        ensure_invoice_can_start_push(document)
+    except QBOPushGuardError as exc:
+        raise HTTPException(409, str(exc)) from None
+    from pydantic import ValidationError
+    try:
+        receipt = ReceiptData.model_validate(document["extracted_data"])
+    except ValidationError:
+        raise HTTPException(422, "Invoice extraction fields are invalid") from None
+    if not receipt.invoice_number or not receipt.invoice_number.strip() or not receipt.date or not receipt.due_date:
+        raise HTTPException(422, "Bill CSV requires invoice_number, date and due_date")
+    amount, tax = receipt.total_amount, receipt.tax_amount
+    if amount is None or tax is None or not amount.is_finite() or not tax.is_finite() or amount < 0 or tax < 0 or tax > amount:
+        raise HTTPException(422, "Bill CSV requires explicit nonnegative total_amount and tax_amount (0 for no tax)")
+    if receipt.due_date < receipt.date:
+        raise HTTPException(422, "Due date cannot precede bill date")
+    if tax > 0 and not tax_code.strip():
+        raise HTTPException(422, "Taxed bills require an explicit tax code for QBO import mapping")
+    client = _get_connected_qbo_client()
+    if client.realm_id != expected_realm_id:
+        raise HTTPException(409, "QBO company changed; reload options")
+    try:
+        vendor = next((v for v in client.get_vendors() if str(v["id"]) == vendor_id and v.get("active") is not False), None)
+        account = next((a for a in client.get_expense_accounts() if str(a["id"]) == account_id and a.get("active") is not False), None)
+    except Exception:
+        raise HTTPException(502, "Could not read QBO vendor/account options") from None
+    if not vendor or not account:
+        raise HTTPException(400, "Selected vendor or expense account is unavailable")
+    check_document_currency(client, receipt, vendor, account)
+    supplier = vendor.get("name")
+    account_name = account.get("fully_qualified_name") or account.get("name")
+    if not supplier or not account_name:
+        raise HTTPException(502, "QBO vendor/account names are missing")
+    # Unlike report CSVs, do not prefix import values: that changes accounting
+    # entity names. Reject formula/control prefixes instead of silently editing.
+    values = [receipt.invoice_number.strip(), supplier, receipt.date.isoformat(), receipt.due_date.isoformat(),
+              account_name, format(amount - tax, "f"), tax_code.strip(), format(tax, "f"),
+              receipt.currency, f"Document {document_id}"]
+    if any(_csv_cell(value) != str(value) or any(c in str(value) for c in "\r\n\t\x00") for value in values):
+        raise HTTPException(422, "Bill CSV contains unsafe import text; correct the source fields")
+    if _load_document(document_id).get("_revision") != expected_revision:
+        raise HTTPException(409, "Document changed during export; reload")
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["Bill no.", "Supplier", "Bill Date", "Due Date", "Account", "Line Amount",
+                     "Line Tax Code", "Line Tax Amount", "Currency", "Line Description"])
+    writer.writerow(values)
+    return Response(("\ufeff" + output.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="qbo-bill-import-draft.csv"',
+                             "Cache-Control": "no-store", "X-Export-QBO-Realm": client.realm_id})
