@@ -51,6 +51,33 @@
     return response;
   }
   async function json(url, options) { return (await request(url, options)).json(); }
+  let exportBusy = false;
+  el("export-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (exportBusy || !auth.user) return;
+    const days = Number(el("export-days").value);
+    if (!Number.isInteger(days) || days < 1 || days > 365) return;
+    const format = el("export-format").value;
+    if (!["csv", "json"].includes(format)) return;
+    const params = new URLSearchParams({days: String(days)});
+    if (el("export-status").value) params.set("status", el("export-status").value);
+    if (el("export-type").value) params.set("document_type", el("export-type").value);
+    exportBusy = true; el("export-submit").disabled = true;
+    el("export-error").hidden = true; el("export-message").textContent = "Dosya hazırlanıyor…";
+    try {
+      const response = await request(`/api/export/${format}?${params}`);
+      const blob = await response.blob();
+      const filename = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] || `receipt-ai-export.${format}`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a"); link.href = url; link.download = filename;
+      document.body.append(link); link.click(); link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+      el("export-message").textContent = "İndirme başlatıldı.";
+    } catch (error) {
+      el("export-message").textContent = "";
+      el("export-error").textContent = errorMessage(error); el("export-error").hidden = false;
+    } finally { exportBusy = false; el("export-submit").disabled = false; }
+  });
   function errorMessage(error) {
     return error instanceof APIError ? error.message : "Sunucuya ulaşılamadı. Bağlantını ve sunucunun çalıştığını kontrol et.";
   }

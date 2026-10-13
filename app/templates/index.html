@@ -76,6 +76,28 @@
       <p id="upload-status" class="small muted" role="status" aria-live="polite">Birden fazla dosya seçebilirsin.</p>
       <ul id="upload-results" class="upload-results" aria-label="Yükleme sonuçları" hidden></ul>
     </section>
+    <section class="upload-card" aria-labelledby="export-heading">
+      <h2 id="export-heading">Belge verilerini indir</h2>
+      <p class="muted small">Şirketinin kaydedilmiş verilerini dışa aktar. CSV belge özetlerini, JSON kalem ve ekstre hareketlerini içerir. En fazla 1000 belge.</p>
+      <form id="export-form" class="auth-form">
+        <label>Son kaç gün?<input id="export-days" type="number" min="1" max="365" value="30" required></label>
+        <label>Durum<select id="export-status">
+          <option value="">Tüm durumlar</option><option value="uploaded">Yüklendi</option>
+          <option value="classifying">Sınıflandırılıyor</option><option value="extracting">Çıkarılıyor</option>
+          <option value="extracted">Veriler çıkarıldı</option><option value="matching">Eşleştiriliyor</option>
+          <option value="matched">Eşleştirildi</option><option value="pushed">Aktarıldı</option><option value="failed">Hatalı</option>
+        </select></label>
+        <label>Belge türü<select id="export-type"><option value="">Tüm türler</option>
+          <option value="invoice">Fatura</option><option value="receipt">Fiş</option><option value="bill">Bill</option>
+          <option value="bank_statement">Banka ekstresi</option><option value="check">Çek</option>
+          <option value="credit_card_statement">Kredi kartı ekstresi</option><option value="unknown">Bilinmiyor</option>
+        </select></label>
+        <label>Biçim<select id="export-format"><option value="csv">CSV — belge özeti</option><option value="json">JSON — ayrıntılı veriler</option></select></label>
+        <button id="export-submit" class="button secondary" type="submit">Verileri indir</button>
+      </form>
+      <p id="export-message" class="small muted" role="status" aria-live="polite"></p>
+      <p id="export-error" class="error-message" role="alert" hidden></p>
+    </section>
     <div class="content-grid">
       <section class="list-card" aria-labelledby="list-heading">
         <div class="list-header">
