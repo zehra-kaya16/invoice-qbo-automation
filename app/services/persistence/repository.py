@@ -17,6 +17,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.core import database
 from app.core.auth import current_principal, company_key as authorized_company_key
 from app.models.database import Company, Document
+from app.services.persistence.check_sources import capture_check_sources
 
 
 class DocumentConflictError(RuntimeError):
@@ -106,6 +107,7 @@ class DocumentRepository:
         ):
             raise ValueError("Invalid document revision")
 
+        capture_check_sources(document)
         state = {
             key: value
             for key, value in document.items()

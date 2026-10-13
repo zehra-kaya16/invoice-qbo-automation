@@ -1,3 +1,4 @@
+from app.services.persistence.check_sources import check_image_bytes, check_image_file, check_image_filename, CheckSourceError
 """Recover verified QBO results without reopening transaction creation."""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -164,7 +165,11 @@ def _attachment_info(document, entry, key):
     kind = api._qbo_attachment_entity_type(entry.get('qbo_transaction_type'))
     if not kind or not entry.get('qbo_transaction_id'):
         raise HTTPException(409, 'Check QBO target was not recorded')
-    return kind, entry['qbo_transaction_id'], entry.get('attachment_marker'), path.name, path.stat().st_size if path.is_file() else None
+    try:
+        size = len(check_image_bytes(document, entry.get('image_path')))
+    except CheckSourceError:
+        size = None
+    return kind, entry['qbo_transaction_id'], entry.get('attachment_marker'), check_image_filename(document, entry.get('image_path')), size
 
 
 def _mark_attachment(document, entry, key, attachment_id):
@@ -299,8 +304,14 @@ def recover(document_id: str, request: RecoveryRequest):
                         path=temp_path;content_type=document.get('content_type') or 'application/octet-stream'
                         document.update(qbo_attachment_marker=marker,qbo_attachment_push_status='uploading',qbo_attachment_started_at=datetime.now(timezone.utc).isoformat())
                     else:
-                        path=entry.get('image_path');content_type='image/png'
-                        if not path or not Path(path).is_file():raise HTTPException(409,'Check image is unavailable; restore its source file first')
+                        content_type='image/png'
+                        try:
+                            content=check_image_bytes(document, entry.get('image_path'))
+                        except CheckSourceError as exc:
+                            raise HTTPException(409,str(exc)) from None
+                        with tempfile.NamedTemporaryFile(delete=False,suffix='.png') as temp:
+                            temp.write(content);temp_path=temp.name
+                        path=temp_path
                         # Category writes must finish before check attachments.
                         if any(i.get('review_status')!='rejected' and i.get('qbo_category_push_status')!='pushed' for i in document.get('category_suggestions',[])):
                             raise HTTPException(409,'Recover every approved category before uploading check images')

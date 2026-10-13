@@ -1,3 +1,6 @@
+from urllib.parse import quote
+from starlette.concurrency import run_in_threadpool
+from app.services.persistence.check_sources import check_image_bytes, check_image_file, check_image_filename, CheckSourceError
 from app.core.auth import company_key as authorized_company_key, current_principal
 from datetime import datetime, timezone
 import uuid
@@ -77,6 +80,8 @@ def _save_document(document: dict) -> None:
 
 
 def _ensure_workflow_editable(document: dict) -> None:
+    if document.get("status") in {ProcessingStatus.CLASSIFYING, ProcessingStatus.EXTRACTING} and document.get("extraction_claim"):
+        raise HTTPException(409, "Extraction is already claimed; wait or recover the interrupted job with the server stopped")
     protected = document.get("qbo_push_state") in {
         "in_progress", "succeeded", "uncertain"
     }
@@ -234,7 +239,11 @@ async def upload_document(
 
         document_id = f"doc_{uuid.uuid4().hex[:12]}"
 
-        content = await file.read()
+        content = await file.read(settings.max_upload_bytes + 1)
+        if not content:
+            raise HTTPException(400, "Uploaded file is empty")
+        if len(content) > settings.max_upload_bytes:
+            raise HTTPException(413, "Uploaded file exceeds MAX_UPLOAD_BYTES")
 
         document = {
             "id": document_id,
@@ -318,6 +327,20 @@ async def get_document_source(document_id: str):
     })
 
 
+@router.get("/{document_id}/checks/{check_index}/source")
+def get_check_source(document_id: str, check_index: int):
+    document = _load_document(document_id)
+    checks = (document.get("extracted_data") or {}).get("check_images", [])
+    if document.get("document_type") != DocumentType.BANK_STATEMENT or check_index < 0 or check_index >= len(checks):
+        raise HTTPException(404, "Check source was not found")
+    try:
+        content = check_image_bytes(document, checks[check_index].get("image_path"))
+    except CheckSourceError as exc:
+        raise HTTPException(409, str(exc)) from None
+    filename=check_image_filename(document, checks[check_index].get("image_path"))
+    return Response(content=content, media_type="image/png", headers={"Cache-Control":"no-store", "Content-Disposition":"inline; filename*=UTF-8\'\'" + quote(filename, safe="")})
+
+
 @router.get("/{document_id}", response_model=DocumentStatus)
 async def get_document(document_id: str):
     document = _load_document(document_id)
@@ -366,12 +389,21 @@ async def _process_document_owned(document_id, principal):
 
 
 async def process_document(document_id: str):
+    await run_in_threadpool(_process_document_sync, document_id)
+
+
+def _process_document_sync(document_id: str):
 
     document = _load_document(document_id)
 
     _ensure_document_can_be_extracted(document)
 
     try:
+        document["extraction_claim"] = uuid.uuid4().hex
+        document["extraction_started_at"] = datetime.now(timezone.utc).isoformat()
+        document["extracted_data"] = None
+        for key in ("check_image_sources", "qbo_match_results", "check_match_results", "category_suggestions", "qbo_match_realm_id", "qbo_match_bank_account"):
+            document.pop(key, None)
         document["status"] = ProcessingStatus.CLASSIFYING
         document["error"] = None
         document["approved"] = False
@@ -381,7 +413,8 @@ async def process_document(document_id: str):
         # Settings reads .env; os.environ alone misses .env-only keys.
         openai_key = os.getenv("OPENAI_API_KEY") or settings.openai_api_key
         anthropic_key = os.getenv("ANTHROPIC_API_KEY") or settings.anthropic_api_key
-        api_key = openai_key or anthropic_key
+        provider = settings.ai_provider or ("openai" if openai_key else "anthropic")
+        api_key = openai_key if provider == "openai" else anthropic_key
 
         if not api_key:
             document["status"] = (
@@ -389,16 +422,11 @@ async def process_document(document_id: str):
             )
 
             document["error"] = (
-                "No AI API key configured"
+                "No AI API key configured" if not openai_key and not anthropic_key else f"No AI API key configured for {provider}"
             )
 
             return
 
-        provider = (
-            "openai"
-            if openai_key
-            else "anthropic"
-        )
 
         from app.services.extraction.extractor import (
             DocumentExtractor,
@@ -477,6 +505,7 @@ async def process_document(document_id: str):
         document["status"] = ProcessingStatus.FAILED
         document["error"] = str(exc)
     finally:
+        document.pop("extraction_claim", None)
         _save_document(document)
 
 def _build_extraction_response(
@@ -786,19 +815,6 @@ def _push_bank_statement_checks(
             image_path
         )
 
-        if not path.exists():
-            message = (
-                "Check image file does not "
-                f"exist: {image_path}"
-            )
-
-            item["attachment_error"] = (
-                message
-            )
-
-            errors.append(message)
-            continue
-
         if not transaction_id:
             message = (
                 "Matched QBO transaction ID "
@@ -833,14 +849,15 @@ def _push_bank_statement_checks(
             persist(document)
 
         try:
-            result = client.upload_attachment(
-                file_path=str(path),
-                file_name=path.name,
-                content_type="image/png",
-                entity_type=entity_type,
-                entity_id=str(transaction_id),
-                recovery_marker=item["attachment_marker"],
-            )
+            with check_image_file(document, image_path) as source_path:
+                result = client.upload_attachment(
+                    file_path=source_path,
+                    file_name=check_image_filename(document, image_path),
+                    content_type="image/png",
+                    entity_type=entity_type,
+                    entity_id=str(transaction_id),
+                    recovery_marker=item["attachment_marker"],
+                )
 
             if not result.get("id"):
                 raise RuntimeError("QBO attachment returned no ID")
@@ -1647,6 +1664,8 @@ async def push_to_qbo(
     document_type = document.get("document_type")
 
     if document_type == DocumentType.BANK_STATEMENT:
+        if document.get("status") not in {ProcessingStatus.EXTRACTED, ProcessingStatus.MATCHED, ProcessingStatus.PUSHED}:
+            raise HTTPException(409, "Extract the bank statement successfully before pushing")
         has_check_images = bool(
             (document.get("extracted_data") or {}).get("check_images")
         )
@@ -1683,6 +1702,14 @@ async def push_to_qbo(
         # Missing or incomplete check results must fail before category writes.
         _validate_bank_statement_check_results(document)
         _save_document(document)
+
+        # Confirm all pending check sources before any category write.
+        for check in document.get("check_match_results", []):
+            if check.get("matched") and not check.get("attachment_id"):
+                try:
+                    check_image_bytes(document, check.get("image_path"))
+                except CheckSourceError as exc:
+                    raise HTTPException(409, str(exc)) from None
 
         # 3. Category review + QBO category write
         category_push_result = (
@@ -2087,7 +2114,7 @@ async def push_to_qbo(
 
     return PushToQBOResponse(
     id=document_id,
-    success=True,
+    success=not response_errors,
     transactions_pushed=1,
     attachments_uploaded=attachments_uploaded,
     vendors_created=0,

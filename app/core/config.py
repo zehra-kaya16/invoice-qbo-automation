@@ -1,5 +1,6 @@
 from typing import Literal, Optional
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,8 +8,11 @@ class Settings(BaseSettings):
     # AI Extraction
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
-    ai_provider: Literal["openai", "anthropic"] = "openai"
-    ai_model: str = "gpt-4o"
+    ai_provider: Optional[Literal["openai", "anthropic"]] = None
+    ai_model: Optional[str] = None
+
+    max_upload_bytes: int = Field(20 * 1024 * 1024, ge=1)
+    max_pdf_pages: int = Field(50, ge=1)
 
     # Database
     database_url: Optional[str] = None
@@ -36,7 +40,7 @@ class Settings(BaseSettings):
 
     @property
     def ai_api_key(self) -> Optional[str]:
-        if self.ai_provider == "openai":
+        if (self.ai_provider or ("openai" if self.openai_api_key else "anthropic")) == "openai":
             return self.openai_api_key
 
         return self.anthropic_api_key

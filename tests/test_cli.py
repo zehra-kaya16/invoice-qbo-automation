@@ -127,10 +127,20 @@ def test_cli_uses_anthropic_when_openai_key_missing(
         "OPENAI_API_KEY",
         raising=False,
     )
-
     monkeypatch.setenv(
         "ANTHROPIC_API_KEY",
         "test-anthropic-key",
+    )
+
+    # Testi gerçek .env ayarlarından bağımsız çalıştır.
+    monkeypatch.setattr(
+        cli,
+        "settings",
+        SimpleNamespace(
+            openai_api_key=None,
+            anthropic_api_key=None,
+            ai_provider=None,
+        ),
     )
 
     captured = {}

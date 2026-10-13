@@ -1,6 +1,8 @@
 import base64
 import io
 import json
+import threading
+from app.core.config import settings
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -17,12 +19,16 @@ from app.schemas.documents import (
 )
 
 
+_pdfium_lock = threading.RLock()
+
+
 class DocumentExtractor:
 
     def __init__(
         self,
         api_key: str,
         provider: str = "openai",
+        model: str = None,
     ):
         self.api_key = api_key
         self.provider = provider
@@ -34,7 +40,7 @@ class DocumentExtractor:
                 api_key=api_key
             )
 
-            self.model = "gpt-4o"
+            self.model = model or settings.ai_model or "gpt-4o"
 
         elif provider == "anthropic":
             from anthropic import Anthropic
@@ -43,9 +49,7 @@ class DocumentExtractor:
                 api_key=api_key
             )
 
-            self.model = (
-                "claude-3-5-sonnet-20241022"
-            )
+            self.model = model or settings.ai_model or "claude-sonnet-4-6"
 
         else:
             raise ValueError(
@@ -53,31 +57,34 @@ class DocumentExtractor:
             )
 
     def pdf_to_page_images(self, pdf_data: bytes) -> list[bytes]:
-        pdf_document = pdfium.PdfDocument(pdf_data)
-        page_images: list[bytes] = []
+        with _pdfium_lock:
+            pdf_document = pdfium.PdfDocument(pdf_data)
+            page_images: list[bytes] = []
 
-        try:
-            scale = 200 / 72
+            try:
+                if len(pdf_document) > settings.max_pdf_pages:
+                    raise ValueError("PDF exceeds MAX_PDF_PAGES")
+                scale = 200 / 72
 
-            for page_index in range(len(pdf_document)):
-                page = pdf_document[page_index]
-
-                try:
-                    bitmap = page.render(scale=scale)
+                for page_index in range(len(pdf_document)):
+                    page = pdf_document[page_index]
 
                     try:
-                        image = bitmap.to_pil()
-                        buffer = io.BytesIO()
-                        image.save(buffer, format="PNG")
-                        page_images.append(buffer.getvalue())
-                    finally:
-                        bitmap.close()
-                finally:
-                    page.close()
-        finally:
-            pdf_document.close()
+                        bitmap = page.render(scale=scale)
 
-        return page_images
+                        try:
+                            image = bitmap.to_pil()
+                            buffer = io.BytesIO()
+                            image.save(buffer, format="PNG")
+                            page_images.append(buffer.getvalue())
+                        finally:
+                            bitmap.close()
+                    finally:
+                        page.close()
+            finally:
+                pdf_document.close()
+
+            return page_images
 
     def _vision_request(self, image_data: bytes, prompt: str) -> str:
         return self._vision_request_pages([image_data], prompt)
@@ -89,13 +96,14 @@ class DocumentExtractor:
             raise ValueError("At least one non-empty page image is required")
 
         encoded = [base64.b64encode(page).decode("utf-8") for page in page_images]
+        media_types = ["image/jpeg" if page.startswith(b"\xff\xd8\xff") else "image/png" for page in page_images]
         if self.provider == "openai":
             content = [{"type": "text", "text": prompt}]
             for index, page in enumerate(encoded, start=1):
                 content.extend([
                     {"type": "text", "text": f"Page {index} of {len(encoded)}"},
                     {"type": "image_url", "image_url": {
-                        "url": "data:image/png;base64," + page,
+                        "url": f"data:{media_types[index - 1]};base64," + page,
                     }},
                 ])
             response = self.client.chat.completions.create(
@@ -114,7 +122,7 @@ class DocumentExtractor:
                 content.extend([
                     {"type": "text", "text": f"Page {index} of {len(encoded)}"},
                     {"type": "image", "source": {
-                        "type": "base64", "media_type": "image/png", "data": page,
+                        "type": "base64", "media_type": media_types[index - 1], "data": page,
                     }},
                 ])
             response = self.client.messages.create(

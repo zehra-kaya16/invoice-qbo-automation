@@ -403,7 +403,7 @@
     el("receipt-form").hidden = true;
     el("readonly-extraction").hidden = true;
     el("raw-extraction").hidden = true;
-    el("extract-document").hidden = !["uploaded", "failed", "classifying", "extracting"].includes(document.status);
+    el("extract-document").hidden = !["uploaded", "failed"].includes(document.status);
     renderValidation(extracted?.validation);
     if (state.reviewNeedsRefresh) el("review-message").textContent = "İşlem sonucu doğrulanamadı. Durumu yenile ile sunucudaki kaydı kontrol et.";
     else if (workflowLocked()) el("review-message").textContent = "QBO yazımı başlamış veya tamamlanmış. Bu belge salt okunur.";
@@ -581,6 +581,11 @@
       const extracted = state.extraction?.bank_statement_data?.check_images[item.check_index] || {};
       card.append(node("h5", `Çek ${extracted.check_number || item.check_index + 1} · ${item.vendor_name || "Satıcı adı yok"}`));
       summaryRows(card, {...item, amount: extracted.amount}, [["amount", "Çek tutarı"], ["vendor_status", "Satıcı durumu"], ["qbo_transaction_id", "QBO işlem ID"], ["qbo_transaction_type", "QBO işlem türü"], ["attachment_push_status", "Ek durumu"], ["attachment_id", "Ek ID"], ["attachment_error", "Ek hatası"]]);
+      const checkSource = node("a", "Çek görselini aç", "button secondary");
+      checkSource.href = `${pathFor(state.selectedId)}/checks/${item.check_index}/source`;
+      checkSource.target = "_blank"; checkSource.rel = "noopener"; card.append(checkSource);
+      const checkDownload = node("a", "Çek görselini indir", "button secondary");
+      checkDownload.href = checkSource.href; checkDownload.download = ""; card.append(checkDownload);
       if (item.vendor_status === "missing" && item.vendor_name) card.append(bankButton("Eksik satıcıyı QBO’da oluştur", "create-vendor", {name: item.vendor_name}));
       checksTarget.append(card);
     }

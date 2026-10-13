@@ -8,29 +8,20 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
+from app.core.config import settings
 
 
 load_dotenv()
 
 
 def get_extractor():
-    api_key = (
-        os.getenv("OPENAI_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY")
-    )
-
+    openai_key = os.getenv("OPENAI_API_KEY") or settings.openai_api_key
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY") or settings.anthropic_api_key
+    provider = settings.ai_provider or ("openai" if openai_key else "anthropic")
+    api_key = openai_key if provider == "openai" else anthropic_key
     if not api_key:
-        print(
-            "Error: Set OPENAI_API_KEY or "
-            "ANTHROPIC_API_KEY environment variable."
-        )
+        print(f"Error: Configure an API key for {provider}.")
         sys.exit(1)
-
-    provider = (
-        "openai"
-        if os.getenv("OPENAI_API_KEY")
-        else "anthropic"
-    )
 
     from app.services.extraction.extractor import (
         DocumentExtractor,
