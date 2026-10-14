@@ -2,6 +2,7 @@
 import hashlib
 import json
 import uuid
+from pydantic import BaseModel
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
@@ -43,7 +44,9 @@ def _status(session, batch):
     failed += len(batch.failed_files)
     status = ("processing" if in_progress else "pending" if pending else
               "completed" if not failed else "partial" if completed else "failed")
-    return {"batch_id": batch.id, "total_files": batch.total_files,
+    from app.services.persistence.batch_extraction import latest_run
+    extraction_run = latest_run(session, batch.id, batch.company_id)
+    return {"extraction_run": extraction_run, "batch_id": batch.id, "total_files": batch.total_files,
             "uploaded_documents": list(batch.document_ids), "failed_files": list(batch.failed_files),
             "completed": completed, "failed": failed, "in_progress": in_progress,
             "pending": pending, "status": status, "items": items,
@@ -155,6 +158,20 @@ async def batch_upload_zip(
     total, prepared, errors = await run_in_threadpool(
         prepare_zip, content, MAX_FILES, settings.max_upload_bytes, MAX_BATCH_BYTES)
     return await run_in_threadpool(_persist_batch, user, scope, str(request_key), fingerprint, total, prepared, errors)
+
+
+class BatchExtractionRequest(BaseModel):
+    retry_failed: bool = False
+
+
+@router.post("/{batch_id}/extract", status_code=202)
+def start_batch_extraction(
+    batch_id: str, body: BatchExtractionRequest,
+    request_key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
+    user: Principal = Depends(get_current_user),
+):
+    from app.services.persistence.batch_extraction import enqueue
+    return enqueue(batch_id, user, request_key, body.retry_failed)
 
 
 @router.get("/status/{batch_id}")

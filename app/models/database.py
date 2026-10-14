@@ -285,6 +285,30 @@ class UploadBatch(Base):
     created_at = Column(DateTime, nullable=False, default=utc_now)
 
 
+class BatchExtractionRun(Base):
+    __tablename__ = "batch_extraction_runs"
+    __table_args__ = (
+        UniqueConstraint("company_id", "request_key", name="uq_batch_run_request"),
+        UniqueConstraint("batch_id", "active_key", name="uq_batch_run_active"),
+    )
+    id = Column(String(50), primary_key=True)
+    batch_id = Column(String(50), ForeignKey("upload_batches.id"), nullable=False)
+    company_id = Column(UUID(as_uuid=False), ForeignKey("companies.id"), nullable=False, index=True)
+    owner_user_id = Column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=False)
+    owner_session_hash = Column(String(64), nullable=False)
+    request_key = Column(String(36), nullable=False)
+    retry_failed = Column(Boolean, nullable=False, default=False)
+    active_key = Column(String(10), nullable=True)
+    status = Column(String(30), nullable=False, index=True)
+    claim_token = Column(String(32), nullable=True)
+    items = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    revision = Column(Integer, nullable=False, default=1, server_default="1")
+    __mapper_args__ = {"version_id_col": revision}
+
+
 class AuditLog(Base):
     """
     Audit log for tracking important actions.

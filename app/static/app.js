@@ -947,7 +947,8 @@
     el("upload-zone").classList.remove("dragover");
   }
   let pendingUpload = null;
-  let batchOffset = 0, batchLoading = false;
+  let batchOffset = 0, batchLoading = false, batchStarting = false, batchHasActive = false;
+  const pendingBatchRuns = new Map();
   function uploadKey() {
     const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
     const hex = Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
@@ -959,13 +960,30 @@
     for (const id of ["batch-refresh", "batch-previous", "batch-next"]) el(id).disabled = true;
     let total = 0;
     try {
-      const data = await json(`/api/batch?limit=20&offset=${offset}`); batchOffset = offset; total = data.total;
+      const data = await json(`/api/batch?limit=20&offset=${offset}`); batchOffset = offset; total = data.total; batchHasActive = data.items.some(batch => ["queued", "running"].includes(batch.extraction_run?.status));
+      const openBatches = new Set(Array.from(el("batch-list").querySelectorAll("details[open]")).map(card => card.dataset.batchId));
       el("batch-list").replaceChildren();
       el("batch-message").textContent = `${total} toplu yükleme · ${offset + 1}–${offset + data.items.length}`;
       if (!total) el("batch-message").textContent = "Henüz toplu yükleme yok.";
       for (const batch of data.items) {
-        const card = node("details"); card.style.overflowWrap = "anywhere";
+        const card = node("details"); card.style.overflowWrap = "anywhere"; card.dataset.batchId = batch.batch_id; card.open = openBatches.has(batch.batch_id);
         card.append(node("summary", `${batch.batch_id} · ${batch.total_files} dosya · bekleyen ${batch.pending}, işlenen ${batch.in_progress}, tamamlanan ${batch.completed}, hatalı ${batch.failed}`));
+        const run = batch.extraction_run;
+        if (run?.request_key === pendingBatchRuns.get(batch.batch_id)?.key) pendingBatchRuns.delete(batch.batch_id);
+        if (run) {
+          const runNames = {queued:"Kuyrukta", running:"İşleniyor", completed:"Bitti", partial:"Kısmen bitti", failed:"Başarısız", cancelled:"Oturum nedeniyle iptal edildi", interrupted:"Kesinti sonrası toparlandı"};
+          card.append(node("p", `${run.run_id} · ${runNames[run.status] || run.status} · başarılı ${run.counts.succeeded}, hatalı ${run.counts.failed}, atlanan ${run.counts.skipped}, bekleyen ${run.counts.queued}, işlenen ${run.counts.running}, işlenmeyen ${run.counts.not_processed}`));
+          if (run.status === "queued") card.append(node("p", "İş kuyrukta. İşleme başladığında durum otomatik güncellenir.", "small muted"));
+          for (const item of run.items) if (item.message) card.append(node("p", `${item.id}: ${item.message}`, "small muted"));
+        }
+        const active = run && ["queued", "running"].includes(run.status);
+        for (const [title, retryFailed] of [["Bekleyenlerin verilerini çıkar", false], ["Başarısızları da yeniden dene", true]]) {
+          if (pendingBatchRuns.has(batch.batch_id) && pendingBatchRuns.get(batch.batch_id).retryFailed !== retryFailed) continue;
+          const start = node("button", pendingBatchRuns.has(batch.batch_id) ? "Aynı extraction isteğini kontrol et" : title, "button secondary");
+          start.type = "button"; start.dataset.batchExtract = "true";
+          start.disabled = (!!active && !pendingBatchRuns.has(batch.batch_id)) || batchStarting || state.reviewBusy || (!pendingBatchRuns.has(batch.batch_id) && !(batch.pending || (retryFailed && batch.items.some(item => item.status === "failed"))));
+          start.addEventListener("click", () => startBatchExtraction(batch.batch_id, retryFailed)); card.append(start);
+        }
         for (const item of batch.items) {
           const row = node("p", `${item.filename || item.id} · ${label(statuses, item.status)}`);
           if (item.status !== "missing") {
@@ -985,6 +1003,25 @@
       el("batch-next").disabled = batchOffset + 20 >= total;
     }
   }
+  async function startBatchExtraction(batchId, retryFailed) {
+    if (batchStarting || state.reviewBusy || state.uploadBusy) return;
+    if (state.dirty || bankChoiceDirty()) { el("batch-error").textContent = "Önce açık belgedeki değişiklikleri kaydet veya geri al."; el("batch-error").hidden = false; return; }
+    const pending = pendingBatchRuns.get(batchId) || {key:uploadKey(), retryFailed};
+    if (!pendingBatchRuns.has(batchId) && !window.confirm("Bu batch’in uygun belgelerinde AI extraction başlatılacak; sağlayıcı maliyeti olabilir. Devam edilsin mi?")) return;
+    let actionError = null;
+    pendingBatchRuns.set(batchId, pending); batchStarting = true; el("batch-error").hidden = true;
+    for (const button of el("batch-list").querySelectorAll("[data-batch-extract]")) button.disabled = true;
+    try {
+      const run = await json(`/api/batch/${encodeURIComponent(batchId)}/extract`, {method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":pending.key},body:JSON.stringify({retry_failed:pending.retryFailed})});
+      pendingBatchRuns.delete(batchId); el("batch-message").textContent = `${run.run_id}: extraction işi kaydedildi.`;
+    } catch (error) {
+      if (error.status && error.status < 500) pendingBatchRuns.delete(batchId);
+      actionError = errorMessage(error);
+    } finally { batchStarting = false; await loadBatches(); if (actionError) { el("batch-error").textContent = actionError; el("batch-error").hidden = false; } }
+  }
+  window.setInterval(() => {
+    if (auth.user && !document.hidden && !batchStarting && !batchLoading && (batchHasActive || pendingBatchRuns.size > 0)) void loadBatches();
+  }, 5000);
   async function uploadFiles(files, retry = false, kind = "files") {
     if (state.uploadBusy || files.length === 0) return;
     if (pendingUpload && !retry) { el("upload-status").textContent = "Önce son yüklemeyi aynı istek düğmesiyle kontrol et."; return; }

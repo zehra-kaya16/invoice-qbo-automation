@@ -392,9 +392,12 @@ async def process_document(document_id: str):
     await run_in_threadpool(_process_document_sync, document_id)
 
 
-def _process_document_sync(document_id: str):
+def _process_document_sync(document_id: str, expected_revision: int | None = None):
 
     document = _load_document(document_id)
+
+    if expected_revision is not None and document.get("_revision") != expected_revision:
+        raise HTTPException(409, "Document changed after extraction was queued")
 
     _ensure_document_can_be_extracted(document)
 

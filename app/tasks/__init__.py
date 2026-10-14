@@ -20,6 +20,8 @@ celery_app = Celery(
 
 
 celery_app.conf.update(
+    imports=("app.tasks.extraction",),
+    beat_schedule={"batch-extraction-queue": {"task": "receipt_ai.process_batch_extraction", "schedule": 2.0}},
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
