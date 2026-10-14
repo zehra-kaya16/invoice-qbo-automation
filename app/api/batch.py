@@ -5,6 +5,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -89,7 +90,10 @@ async def batch_upload(
             errors.append({"index": index, "filename": filename[:255], "error": error})
         else:
             prepared.append((filename, media, content))
-    fingerprint = digest.hexdigest()
+    return await run_in_threadpool(_persist_batch, user, scope, key, digest.hexdigest(), len(files), prepared, errors)
+
+
+def _persist_batch(user, scope, key, fingerprint, total_files, prepared, errors):
     try:
         with database.SessionLocal() as session:
             existing = _existing(session, user, key, fingerprint)
@@ -113,7 +117,7 @@ async def batch_upload(
                                      content_type=media, file_size=len(content), source_content=content,
                                      status="uploaded", workflow_state=state))
             batch = UploadBatch(id=batch_id, company_id=user.company_id, request_key=key,
-                                fingerprint=fingerprint, total_files=len(files), document_ids=ids,
+                                fingerprint=fingerprint, total_files=total_files, document_ids=ids,
                                 failed_files=errors)
             session.add(batch)
             # Unique key arbitrates concurrent retries. No document survives a
@@ -129,6 +133,28 @@ async def batch_upload(
             return _status(session, batch)
     except SQLAlchemyError:
         raise HTTPException(503, "Batch storage unavailable; check history before retrying") from None
+
+
+@router.post("/upload-zip")
+async def batch_upload_zip(
+    file: Annotated[UploadFile, File()],
+    request_key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
+    company_id: str | None = Query(None, min_length=1, max_length=100),
+    user: Principal = Depends(get_current_user),
+):
+    from app.services.persistence.zip_upload import MAX_ZIP_BYTES, prepare_zip
+    scope = company_key(company_id)
+    if not (file.filename or "").lower().endswith(".zip"):
+        raise HTTPException(400, "Choose a ZIP file")
+    content = await file.read(MAX_ZIP_BYTES + 1)
+    if len(content) > MAX_ZIP_BYTES:
+        raise HTTPException(413, "Compressed ZIP exceeds 20 MiB")
+    # Domain-separated fingerprint prevents a normal upload from colliding
+    # with the same key used for a ZIP request. Exact archive retries reuse IDs.
+    fingerprint = hashlib.sha256(b"receipt-ai:zip-upload:v1\0" + content).hexdigest()
+    total, prepared, errors = await run_in_threadpool(
+        prepare_zip, content, MAX_FILES, settings.max_upload_bytes, MAX_BATCH_BYTES)
+    return await run_in_threadpool(_persist_batch, user, scope, str(request_key), fingerprint, total, prepared, errors)
 
 
 @router.get("/status/{batch_id}")

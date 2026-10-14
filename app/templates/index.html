@@ -67,6 +67,9 @@
     </div>
     <section class="upload-card" aria-labelledby="upload-heading">
       <div class="section-heading"><h2 id="upload-heading">Yeni belge ekle</h2><span class="muted small">PDF · PNG · JPG · HEIC</span></div>
+      <button id="choose-zip" class="button secondary" type="button">ZIP arşivi yükle</button>
+      <input id="zip-input" type="file" accept=".zip,application/zip" class="visually-hidden" aria-label="Yüklenecek ZIP arşivini seç">
+      <p class="small muted">ZIP: en fazla 20 MiB; açılmış içerik 100 MiB ve 100 görünür dosya. Alt klasörler desteklenir.</p>
       <input id="file-input" class="visually-hidden" type="file" accept=".pdf,.png,.jpg,.jpeg,.heic" multiple aria-label="Yüklenecek dosyaları seç">
       <button id="upload-zone" class="upload-zone" type="button">
         <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m-4 4 4-4 4 4M4 15v5h16v-5"/></svg>

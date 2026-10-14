@@ -943,7 +943,7 @@
 
   function uploadControls(busy) {
     state.uploadBusy = busy;
-    for (const id of ["file-input", "choose-files", "upload-zone"]) el(id).disabled = busy;
+    for (const id of ["file-input", "zip-input", "choose-zip", "choose-files", "upload-zone"]) el(id).disabled = busy;
     el("upload-zone").classList.remove("dragover");
   }
   let pendingUpload = null;
@@ -985,21 +985,23 @@
       el("batch-next").disabled = batchOffset + 20 >= total;
     }
   }
-  async function uploadFiles(files, retry = false) {
+  async function uploadFiles(files, retry = false, kind = "files") {
     if (state.uploadBusy || files.length === 0) return;
     if (pendingUpload && !retry) { el("upload-status").textContent = "Önce son yüklemeyi aynı istek düğmesiyle kontrol et."; return; }
     if (files.length > 100) { el("upload-status").textContent = "Bir yüklemede en fazla 100 dosya seç."; return; }
-    if (!retry) pendingUpload = {files, key:uploadKey()};
+    if (kind === "zip" && (files.length !== 1 || !files[0].name.toLowerCase().endsWith(".zip"))) { el("upload-status").textContent = "Tek bir ZIP arşivi seç."; return; }
+    if (!retry) pendingUpload = {files, kind, key:uploadKey()};
     uploadControls(true); el("retry-batch-upload").hidden = true;
     el("upload-results").replaceChildren(); el("upload-results").hidden = false;
     el("upload-status").textContent = "Toplu yükleme kaydediliyor…";
     try {
       const form = new FormData();
-      for (const file of pendingUpload.files) {
+      if (pendingUpload.kind === "zip") form.append("file", pendingUpload.files[0]);
+      else for (const file of pendingUpload.files) {
         const extension = file.name.split(".").pop().toLowerCase();
         form.append("files", new File([file], file.name, {type:mediaByExtension[extension] || file.type || "application/octet-stream", lastModified:file.lastModified}));
       }
-      const data = await json("/api/batch/upload", {method:"POST", headers:{"Idempotency-Key":pendingUpload.key}, body:form});
+      const data = await json(pendingUpload.kind === "zip" ? "/api/batch/upload-zip" : "/api/batch/upload", {method:"POST", headers:{"Idempotency-Key":pendingUpload.key}, body:form});
       for (const item of data.items) {
         const row = node("li", `${item.filename} — Kaydedildi`, "upload-result success");
         const open = node("button", "Kaynağı aç", "button secondary"); open.type = "button";
@@ -1008,14 +1010,16 @@
       }
       for (const item of data.failed_files) el("upload-results").append(node("li", `${item.filename} — ${item.error}`, "upload-result error"));
       el("upload-status").textContent = `${data.uploaded_documents.length} dosya kaydedildi; ${data.failed_files.length} yükleme hatası. ${data.batch_id}`;
-      pendingUpload = null; el("file-input").value = "";
+      pendingUpload = null; el("file-input").value = ""; el("zip-input").value = "";
     } catch (error) {
       el("upload-status").textContent = errorMessage(error);
-      if (error.status && error.status < 500) { pendingUpload = null; el("file-input").value = ""; }
+      if (error.status && error.status < 500) { pendingUpload = null; el("file-input").value = ""; el("zip-input").value = ""; }
       else { el("retry-batch-upload").hidden = false; el("upload-status").textContent += " Sonuç belirsiz; aynı istek düğmesini kullan. Dosyaları yeni bir yükleme olarak seçme."; }
     } finally { uploadControls(false); await Promise.all([loadDocuments(0), loadBatches(0)]); }
   }
-  el("retry-batch-upload").addEventListener("click", () => { if (pendingUpload) void uploadFiles(pendingUpload.files, true); });
+  el("choose-zip").addEventListener("click", () => el("zip-input").click());
+  el("zip-input").addEventListener("change", () => uploadFiles(Array.from(el("zip-input").files), false, "zip"));
+  el("retry-batch-upload").addEventListener("click", () => { if (pendingUpload) void uploadFiles(pendingUpload.files, true, pendingUpload.kind); });
   el("batch-refresh").addEventListener("click", () => loadBatches());
   el("batch-previous").addEventListener("click", () => loadBatches(Math.max(0, batchOffset - 20)));
   el("batch-next").addEventListener("click", () => loadBatches(batchOffset + 20));
