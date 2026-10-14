@@ -74,6 +74,7 @@
         <span class="muted">veya dosya seçmek için tıkla</span>
       </button>
       <p id="upload-status" class="small muted" role="status" aria-live="polite">Birden fazla dosya seçebilirsin.</p>
+      <button id="retry-batch-upload" class="button secondary" type="button" hidden>Aynı yükleme isteğini tekrar kontrol et</button>
       <ul id="upload-results" class="upload-results" aria-label="Yükleme sonuçları" hidden></ul>
     </section>
     <section class="upload-card" aria-labelledby="export-heading">
@@ -97,6 +98,16 @@
       </form>
       <p id="export-message" class="small muted" role="status" aria-live="polite"></p>
       <p id="export-error" class="error-message" role="alert" hidden></p>
+    </section>
+    <section class="upload-card" aria-labelledby="batch-heading">
+      <div class="section-heading"><h2 id="batch-heading">Toplu yükleme geçmişi</h2>
+        <button id="batch-refresh" class="button secondary" type="button">Yüklemeleri yenile</button></div>
+      <p class="muted small">Bekleyen: henüz verileri çıkarılmamış belgeler. Tamamlanan: verileri çıkarılmış/eşleştirilmiş veya QBO’ya aktarılmış belgeler; bu sayaç tek başına QBO aktarımı anlamına gelmez.</p>
+      <p id="batch-message" class="small muted" role="status"></p>
+      <p id="batch-error" class="error-message" role="alert" hidden></p>
+      <div id="batch-list"></div>
+      <div class="review-actions"><button id="batch-previous" class="button secondary" type="button" disabled>Önceki yüklemeler</button>
+        <button id="batch-next" class="button secondary" type="button" disabled>Sonraki yüklemeler</button></div>
     </section>
     <div class="content-grid">
       <section class="list-card" aria-labelledby="list-heading">

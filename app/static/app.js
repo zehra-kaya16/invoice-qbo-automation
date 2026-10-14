@@ -946,48 +946,79 @@
     for (const id of ["file-input", "choose-files", "upload-zone"]) el(id).disabled = busy;
     el("upload-zone").classList.remove("dragover");
   }
-  async function uploadFiles(files) {
-    if (state.uploadBusy || files.length === 0) return;
-    uploadControls(true);
-    el("upload-results").replaceChildren();
-    el("upload-results").hidden = false;
-    let succeeded = 0;
-    let failed = 0;
-    for (let index = 0; index < files.length; index++) {
-      const file = files[index];
-      el("upload-status").textContent = `Yükleniyor (${index + 1}/${files.length}): ${file.name}`;
-      const result = node("li", `${file.name} — Yükleniyor…`, "upload-result");
-      el("upload-results").append(result);
-      try {
-        const extension = file.name.split(".").pop().toLowerCase();
-        if (!Object.hasOwn(mediaByExtension, extension)) throw new APIError("Desteklenmeyen dosya. PDF, PNG, JPG veya HEIC seç.");
-        if (file.size === 0) throw new APIError("Dosya boş; başka bir dosya seç.");
-        // Some Windows/browser combinations send an empty MIME for HEIC.
-        const normalized = new File([file], file.name, {type: mediaByExtension[extension], lastModified: file.lastModified});
-        const form = new FormData();
-        form.append("file", normalized);
-        const data = await json("/api/documents/upload?auto_process=false", {method: "POST", body: form});
-        if (!data.id) throw new Error("Upload response has no document ID");
-        succeeded++;
-        result.classList.add("success");
-        result.textContent = `${file.name} — Kaydedildi`;
-        const open = node("button", "Kaynağı aç", "button secondary");
-        open.type = "button";
-        open.dataset.documentOpen = "true";
-        open.disabled = state.reviewBusy;
-        open.addEventListener("click", () => openSource(data.id));
-        result.append(open);
-      } catch (error) {
-        failed++;
-        result.classList.add("error");
-        result.textContent = `${file.name} — ${error instanceof APIError ? errorMessage(error) : "Yükleme sonucu doğrulanamadı. Tekrar yüklemeden önce listeyi yenileyerek kontrol et."}`;
-      }
-    }
-    el("upload-status").textContent = `${succeeded} dosya kaydedildi${failed ? `; ${failed} dosya için yükleme tamamlanamadı` : ""}.`;
-    el("file-input").value = "";
-    uploadControls(false);
-    await loadDocuments(0);
+  let pendingUpload = null;
+  let batchOffset = 0, batchLoading = false;
+  function uploadKey() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
   }
+  async function loadBatches(offset = batchOffset) {
+    if (batchLoading) return;
+    batchLoading = true; el("batch-error").hidden = true;
+    for (const id of ["batch-refresh", "batch-previous", "batch-next"]) el(id).disabled = true;
+    let total = 0;
+    try {
+      const data = await json(`/api/batch?limit=20&offset=${offset}`); batchOffset = offset; total = data.total;
+      el("batch-list").replaceChildren();
+      el("batch-message").textContent = `${total} toplu yükleme · ${offset + 1}–${offset + data.items.length}`;
+      if (!total) el("batch-message").textContent = "Henüz toplu yükleme yok.";
+      for (const batch of data.items) {
+        const card = node("details"); card.style.overflowWrap = "anywhere";
+        card.append(node("summary", `${batch.batch_id} · ${batch.total_files} dosya · bekleyen ${batch.pending}, işlenen ${batch.in_progress}, tamamlanan ${batch.completed}, hatalı ${batch.failed}`));
+        for (const item of batch.items) {
+          const row = node("p", `${item.filename || item.id} · ${label(statuses, item.status)}`);
+          if (item.status !== "missing") {
+            const open = node("button", "Belgeyi incele", "button secondary"); open.type = "button";
+            open.dataset.documentOpen = "true"; open.disabled = state.reviewBusy;
+            open.addEventListener("click", () => openSource(item.id)); row.append(open);
+          }
+          card.append(row);
+        }
+        for (const item of batch.failed_files) card.append(node("p", `${item.filename} — ${item.error}`, "error-message"));
+        el("batch-list").append(card);
+      }
+    } catch (error) { el("batch-error").textContent = errorMessage(error); el("batch-error").hidden = false; }
+    finally {
+      batchLoading = false; el("batch-refresh").disabled = false;
+      el("batch-previous").disabled = batchOffset === 0;
+      el("batch-next").disabled = batchOffset + 20 >= total;
+    }
+  }
+  async function uploadFiles(files, retry = false) {
+    if (state.uploadBusy || files.length === 0) return;
+    if (pendingUpload && !retry) { el("upload-status").textContent = "Önce son yüklemeyi aynı istek düğmesiyle kontrol et."; return; }
+    if (files.length > 100) { el("upload-status").textContent = "Bir yüklemede en fazla 100 dosya seç."; return; }
+    if (!retry) pendingUpload = {files, key:uploadKey()};
+    uploadControls(true); el("retry-batch-upload").hidden = true;
+    el("upload-results").replaceChildren(); el("upload-results").hidden = false;
+    el("upload-status").textContent = "Toplu yükleme kaydediliyor…";
+    try {
+      const form = new FormData();
+      for (const file of pendingUpload.files) {
+        const extension = file.name.split(".").pop().toLowerCase();
+        form.append("files", new File([file], file.name, {type:mediaByExtension[extension] || file.type || "application/octet-stream", lastModified:file.lastModified}));
+      }
+      const data = await json("/api/batch/upload", {method:"POST", headers:{"Idempotency-Key":pendingUpload.key}, body:form});
+      for (const item of data.items) {
+        const row = node("li", `${item.filename} — Kaydedildi`, "upload-result success");
+        const open = node("button", "Kaynağı aç", "button secondary"); open.type = "button";
+        open.dataset.documentOpen = "true"; open.disabled = state.reviewBusy;
+        open.addEventListener("click", () => openSource(item.id)); row.append(open); el("upload-results").append(row);
+      }
+      for (const item of data.failed_files) el("upload-results").append(node("li", `${item.filename} — ${item.error}`, "upload-result error"));
+      el("upload-status").textContent = `${data.uploaded_documents.length} dosya kaydedildi; ${data.failed_files.length} yükleme hatası. ${data.batch_id}`;
+      pendingUpload = null; el("file-input").value = "";
+    } catch (error) {
+      el("upload-status").textContent = errorMessage(error);
+      if (error.status && error.status < 500) { pendingUpload = null; el("file-input").value = ""; }
+      else { el("retry-batch-upload").hidden = false; el("upload-status").textContent += " Sonuç belirsiz; aynı istek düğmesini kullan. Dosyaları yeni bir yükleme olarak seçme."; }
+    } finally { uploadControls(false); await Promise.all([loadDocuments(0), loadBatches(0)]); }
+  }
+  el("retry-batch-upload").addEventListener("click", () => { if (pendingUpload) void uploadFiles(pendingUpload.files, true); });
+  el("batch-refresh").addEventListener("click", () => loadBatches());
+  el("batch-previous").addEventListener("click", () => loadBatches(Math.max(0, batchOffset - 20)));
+  el("batch-next").addEventListener("click", () => loadBatches(batchOffset + 20));
   async function checkQBO() {
     try {
       const data = await json("/api/qbo/status");
@@ -1025,7 +1056,7 @@
   el("reset-review").addEventListener("click", () => { state.dirty = false; if (!state.reviewNeedsRefresh) el("review-error").hidden = true; renderReview(); });
   el("add-line-item").addEventListener("click", () => { el("line-items").append(lineItem({description: "", quantity: 1, unit_price: null, amount: null, category: null})); updateDirty(); });
   window.addEventListener("beforeunload", (event) => {
-    if (state.dirty || state.reviewBusy || bankChoiceDirty()) { event.preventDefault(); event.returnValue = ""; }
+    if (state.dirty || state.reviewBusy || state.uploadBusy || pendingUpload || bankChoiceDirty()) { event.preventDefault(); event.returnValue = ""; }
   });
   function accountControls(busy) {
     accountBusy = busy;
@@ -1096,7 +1127,7 @@
       el("login-panel").hidden=true;el("main").hidden=false;el("auth-logout").hidden=false;
       el("auth-identity").textContent=`${auth.user.company.name} · ${auth.user.email}`;
       el("users-panel").hidden=auth.user.role!=="admin";
-      await Promise.all([loadDocuments(0),checkQBO()]);
+      await Promise.all([loadDocuments(0),checkQBO(),loadBatches(0)]);
       if (auth.user.role==="admin") await accountAction(loadUsers);
     } catch (error) {
       el("main").hidden=true;el("login-panel").hidden=false;

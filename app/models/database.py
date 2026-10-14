@@ -18,6 +18,7 @@ from sqlalchemy import (
     LargeBinary,
     Numeric,
     String,
+    UniqueConstraint,
     Text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -269,6 +270,19 @@ class ExtractedTransaction(Base):
     
     # Relationships
     document = relationship("Document", back_populates="transactions")
+
+
+class UploadBatch(Base):
+    __tablename__ = "upload_batches"
+    __table_args__ = (UniqueConstraint("company_id", "request_key", name="uq_batch_company_request"),)
+    id = Column(String(50), primary_key=True)
+    company_id = Column(UUID(as_uuid=False), ForeignKey("companies.id"), nullable=False, index=True)
+    request_key = Column(String(36), nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    total_files = Column(Integer, nullable=False)
+    document_ids = Column(JSON, nullable=False)
+    failed_files = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
 
 
 class AuditLog(Base):
