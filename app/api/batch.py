@@ -2,8 +2,8 @@
 import hashlib
 import json
 import uuid
-from pydantic import BaseModel
-from typing import Annotated
+from pydantic import BaseModel, Field
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from starlette.concurrency import run_in_threadpool
@@ -46,7 +46,9 @@ def _status(session, batch):
               "completed" if not failed else "partial" if completed else "failed")
     from app.services.persistence.batch_extraction import latest_run
     extraction_run = latest_run(session, batch.id, batch.company_id)
-    return {"extraction_run": extraction_run, "batch_id": batch.id, "total_files": batch.total_files,
+    from app.services.persistence import batch_push
+    return {"qbo_plans": batch_push.public_plans(session, batch), "push_run": batch_push.latest_run(session, batch),
+            "extraction_run": extraction_run, "batch_id": batch.id, "total_files": batch.total_files,
             "uploaded_documents": list(batch.document_ids), "failed_files": list(batch.failed_files),
             "completed": completed, "failed": failed, "in_progress": in_progress,
             "pending": pending, "status": status, "items": items,
@@ -199,3 +201,45 @@ def list_batches(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge
             return {"total": total, "limit": limit, "offset": offset, "items": [_status(session, b) for b in batches]}
     except SQLAlchemyError:
         raise HTTPException(503, "Batch storage unavailable") from None
+
+
+class SavedQBOPlanRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    expected_realm_id: str = Field(min_length=1, max_length=50)
+    create_as: Literal["bill", "expense", "bank_statement"]
+    vendor_id: str | None = None
+    account_id: str | None = None
+    bank_account_id: str | None = None
+    description: str | None = Field(default=None, max_length=4000)
+
+
+class BatchPlanSelection(BaseModel):
+    document_id: str = Field(min_length=1, max_length=100)
+    plan_id: str = Field(min_length=1, max_length=50)
+
+
+class BatchPushRequest(BaseModel):
+    plans: list[BatchPlanSelection] = Field(min_length=1, max_length=MAX_FILES)
+
+
+@router.post("/{batch_id}/plans/{document_id}")
+def save_batch_plan(batch_id: str, document_id: str, request: SavedQBOPlanRequest,
+                    user: Principal = Depends(get_current_user)):
+    from app.services.persistence.batch_push import save_plan
+    if request.create_as != "bank_statement" and (not request.vendor_id or not request.account_id):
+        raise HTTPException(400, "Select the document's QBO vendor and expense account")
+    return save_plan(batch_id, document_id, dict(request.model_dump(), attach_documents=True), user)
+
+
+@router.post("/push-all/{batch_id}")
+async def push_batch(batch_id: str, request: BatchPushRequest,
+                     request_key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
+                     user: Principal = Depends(get_current_user)):
+    from app.services.persistence.batch_push import push
+    return await run_in_threadpool(push, batch_id, [item.model_dump() for item in request.plans], user, str(request_key))
+
+
+@router.get("/{batch_id}/push-runs/{run_id}")
+def batch_push_status(batch_id: str, run_id: str, user: Principal = Depends(get_current_user)):
+    from app.services.persistence.batch_push import read_run
+    return read_run(batch_id, run_id, user)

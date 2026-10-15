@@ -560,6 +560,8 @@
     el("bank-categories").disabled = waiting || !editable || !matchesDone || !vendorsDone || mappingChanged || choicesPending;
     el("bank-preview").disabled = waiting || !editable || !bank.data?.push_ready || mappingChanged || choicesPending;
     el("bank-push").disabled = waiting || !editable || !bank.plan || bank.plan.revision !== bank.data?.revision || mappingChanged || choicesPending;
+    el("bank-save-batch").hidden = !state.document?.batch_id;
+    el("bank-save-batch").disabled = el("bank-push").disabled || !state.document?.batch_id;
     for (const button of el("bank-panel").querySelectorAll("[data-bank-mutation]")) button.disabled = waiting || !editable || mappingChanged || button.dataset.unavailable === "true";
     for (const select of el("bank-panel").querySelectorAll("[data-bank-choice]")) select.disabled = waiting || !editable || mappingChanged;
     if (!waiting) el("bank-message").textContent = bank.uncertain || state.reviewNeedsRefresh ? "İşlem sonucu doğrulanamadı. Ekstre durumunu yenile; QBO yazımını tekrar gönderme."
@@ -847,6 +849,8 @@
       || (body.create_as === "expense" && !body.bank_account_id);
     el("qbo-import-draft").disabled = waiting || !allowed || !qbo.ready || state.document?.document_type !== "invoice" || body.create_as !== "bill" || !body.vendor_id || !body.account_id;
     el("qbo-push").disabled = waiting || !allowed || !qbo.plan || JSON.stringify(body) !== qbo.plan.signature;
+    el("qbo-save-batch").hidden = !state.document?.batch_id;
+    el("qbo-save-batch").disabled = el("qbo-push").disabled || !state.document?.batch_id;
     const doc = state.document;
     el("qbo-result").replaceChildren(); el("qbo-result").hidden = !workflowLocked();
     if (workflowLocked()) {
@@ -894,9 +898,12 @@
         qbo.ready = true;
       } else if (action === "preview") {
         invalidatePlan();
+        const snapshot = await json(`${pathFor(id)}/recovery`);
         const data = await json(`/api/qbo/invoice-plan/${encodeURIComponent(id)}`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
         if (data.document_id !== id || data.realm_id !== qbo.realm) throw new APIError("Planın belge veya QBO şirketi doğrulanamadı.", 409);
-        qbo.plan = {signature: JSON.stringify(body), body};
+        const after = await json(`${pathFor(id)}/recovery`);
+        if (after.revision !== snapshot.revision) throw new APIError("Belge değişti. Planı yeniden önizle.", 409);
+        qbo.plan = {signature: JSON.stringify(body), body, revision:snapshot.revision};
         const target = el("qbo-plan"); target.replaceChildren(node("h3", "Gönderim planı")); target.hidden = false;
         summaryRows(target, {company: qbo.realm, kind: data.create_as, vendor: data.vendor.name, account: data.account.name,
           bank: body.bank_account_id ? el("qbo-bank").selectedOptions[0].textContent : "—", currency: data.currency_check.document_currency,
@@ -904,7 +911,7 @@
         summaryRows(target, data.plan.kwargs, [["amount", "Toplam tutar"], ["date", "İşlem tarihi"], ["due_date", "Vade tarihi"], ["description", "Açıklama"]]);
         target.append(node("p", "Belge toplamı seçilen gider hesabına tek işlem olarak yazılır.", "muted small"));
       } else {
-        const response = await json(`${pathFor(id)}/push-to-qbo`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({...qbo.plan.body, attach_documents: true})});
+        const response = await json(`${pathFor(id)}/push-to-qbo`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({...qbo.plan.body, expected_revision:qbo.plan.revision, attach_documents: true})});
         invalidatePlan();
         const doc = await json(pathFor(id)); state.document = doc; detail(doc);
         if (response.errors?.length) { el("qbo-error").textContent = response.errors.join("; "); el("qbo-error").hidden = false; }
@@ -941,6 +948,23 @@
   }
   for (const action of ["load", "preview", "push"]) el(`qbo-${action}`).addEventListener("click", () => qboAction(action));
 
+  async function saveBatchPlan(isBank) {
+    const button = el(isBank ? "bank-save-batch" : "qbo-save-batch");
+    if (button.disabled || !state.document?.batch_id || state.reviewBusy) return;
+    const batchId = state.document.batch_id, id = state.selectedId;
+    const body = isBank ? {create_as:"bank_statement", expected_revision:bank.plan.revision, expected_realm_id:bank.plan.realm}
+      : {...qbo.plan.body, expected_revision:qbo.plan.revision};
+    state.reviewBusy = true; reviewControls();
+    const errorId = isBank ? "bank-error" : "qbo-error"; el(errorId).hidden = true;
+    try {
+      await json(`/api/batch/${encodeURIComponent(batchId)}/plans/${encodeURIComponent(id)}`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      el(isBank ? "bank-plan" : "qbo-plan").append(node("p", "Plan kaydedildi. Toplu yüklemeler bölümünde bu belgeyi seçerek aktarabilirsin. QBO’ya henüz yazılmadı."));
+    } catch (error) { el(errorId).textContent = errorMessage(error); el(errorId).hidden = false; }
+    finally { state.reviewBusy = false; reviewControls(); await loadBatches(); }
+  }
+  el("qbo-save-batch").addEventListener("click", () => saveBatchPlan(false));
+  el("bank-save-batch").addEventListener("click", () => saveBatchPlan(true));
+
   function uploadControls(busy) {
     state.uploadBusy = busy;
     for (const id of ["file-input", "zip-input", "choose-zip", "choose-files", "upload-zone"]) el(id).disabled = busy;
@@ -948,19 +972,85 @@
   }
   let pendingUpload = null;
   let batchOffset = 0, batchLoading = false, batchStarting = false, batchHasActive = false;
-  const pendingBatchRuns = new Map();
+  const pendingBatchRuns = new Map(), pendingBatchPushes = new Map();
+  let batchFinancialBusy = false;
   function uploadKey() {
     const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
     const hex = Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
     return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
   }
+  function renderBatchPush(card, batch, selectedPlans) {
+    const run = batch.push_run, pending = pendingBatchPushes.get(batch.batch_id);
+    if (pending && run?.request_key === pending.key) pendingBatchPushes.delete(batch.batch_id);
+    const names = {running:"Gönderim sürüyor / kesinti varsa toparlanma gerekli", completed:"Aktarım tamamlandı", needs_review:"QBO sonucu için toparlanma gerekli", blocked:"Gönderim engellendi", cancelled:"Oturum nedeniyle durdu", interrupted:"Kesinti kaydı toparlandı", succeeded:"Başarılı", sending:"Gönderiliyor", queued:"Bekliyor", not_started:"Gönderilmedi"};
+    if (run) {
+      card.append(node("h4", `QBO aktarımı · ${run.run_id}`), node("p", names[run.status] || run.status));
+      for (const item of run.items) {
+        const result = node("p", `${item.id} · ${names[item.status] || item.status}${item.transaction_id ? ` · QBO ${item.transaction_type} ${item.transaction_id}` : ""}${item.attachment_id ? ` · Ek ${item.attachment_id}` : ""}${item.message ? ` · ${item.message}` : ""}`);
+        if (item.bank_results) {
+          for (const c of item.bank_results.categories) result.append(node("span", ` · Purchase ${c.qbo_transaction_id}: ${c.qbo_category_push_status || "—"}`));
+          for (const c of item.bank_results.checks) result.append(node("span", ` · Çek eki ${c.qbo_transaction_id}: ${c.attachment_id || c.attachment_push_status || "—"}`));
+        }
+        card.append(result);
+      }
+    }
+    const plans = batch.qbo_plans || []; if (!plans.length) return;
+    card.append(node("h4", "Kaydedilmiş QBO planları"), node("p", "Aktarılacak belgeleri tek tek seç. Fatura/fiş kaynak ekiyle yazılır; ekstre mevcut kayıtları günceller. İlk hatada kalanlar gönderilmez.", "small muted"));
+    const checkboxes = [];
+    for (const plan of plans) {
+      const field = node("label", undefined, "review-field"), checkbox = node("input"); checkbox.type = "checkbox"; checkbox.style.width = "auto"; checkbox.style.alignSelf = "flex-start"; checkbox.checked = selectedPlans.has(plan.plan_id);
+      checkbox.dataset.batchPlan = plan.plan_id; checkbox.value = plan.document_id;
+      checkbox.disabled = plan.stale || run?.status === "running" || state.reviewBusy || pendingBatchPushes.has(batch.batch_id);
+      const data = plan.preview, amount = data.plan?.kwargs?.amount;
+      field.append(checkbox, node("span", `${batch.items.find(item => item.id === plan.document_id)?.filename || plan.document_id} · ${data.create_as} · QBO ${plan.realm_id}${plan.stale ? " · Belge değişti / gönderildi; plan kullanılamaz" : ""}`));
+      card.append(field);
+      if (data.create_as === "bank_statement") {
+        card.append(node("p", `Banka: ${data.bank_account?.name || data.bank_account?.id || "—"}`));
+        for (const c of data.plan.category_updates) card.append(node("p", `Purchase ${c.qbo_transaction_id} → ${c.category_name || c.account_id} (${c.account_id})`));
+        for (const c of data.plan.check_attachments) card.append(node("p", `Çek ${c.check_index + 1}: ${c.qbo_transaction_type} ${c.qbo_transaction_id} kaydına ek`));
+      } else {
+        const rows = node("div"); summaryRows(rows, {vendor:`${data.vendor.name} (${data.vendor.id})`, account:`${data.account.name} (${data.account.id})`, bank:plan.body.bank_account_id || "—", amount, currency:data.currency_check.document_currency, date:data.plan.kwargs.date, due:data.plan.kwargs.due_date, description:data.plan.kwargs.description}, [["vendor","Satıcı"],["account","Gider hesabı"],["bank","Banka hesap ID"],["amount","Tutar"],["currency","Para birimi"],["date","Tarih"],["due","Vade"],["description","Açıklama"]]); card.append(rows);
+      }
+      checkboxes.push(checkbox);
+    }
+    const button = node("button", pendingBatchPushes.has(batch.batch_id) ? "Aynı aktarım isteğinin sonucunu kontrol et" : "Seçilen kayıtlı planları QBO’ya aktar", "button primary"); button.type = "button"; button.dataset.batchPush = batch.batch_id;
+    const controls = () => { button.disabled = state.reviewBusy || batchFinancialBusy || (!pendingBatchPushes.has(batch.batch_id) && (run?.status === "running" || !checkboxes.some(c => c.checked && !c.disabled))); };
+    for (const checkbox of checkboxes) checkbox.addEventListener("change", controls);
+    button.addEventListener("click", () => pushBatch(batch, checkboxes)); controls(); card.append(button);
+  }
+  async function pushBatch(batch, checkboxes) {
+    if (state.reviewBusy || batchFinancialBusy || !canLeaveReview()) return;
+    let pending = pendingBatchPushes.get(batch.batch_id);
+    if (!pending) {
+      const plans = checkboxes.filter(c => c.checked && !c.disabled).map(c => ({document_id:c.value, plan_id:c.dataset.batchPlan}));
+      if (!plans.length || !window.confirm(`${plans.length} seçili belgeyi kayıtlı planlarıyla QBO’ya aktarmak istiyor musun? İlk hatada kalanlar gönderilmez.`)) return;
+      pending = {key:uploadKey(), plans}; pendingBatchPushes.set(batch.batch_id, pending);
+    }
+    batchFinancialBusy = true; state.reviewBusy = true; reviewControls(); el("batch-error").hidden = true;
+    for (const control of el("batch-list").querySelectorAll("button, input")) control.disabled = true;
+    let message = null;
+    try {
+      await json(`/api/batch/push-all/${encodeURIComponent(batch.batch_id)}`, {method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":pending.key},body:JSON.stringify({plans:pending.plans})});
+      pendingBatchPushes.delete(batch.batch_id);
+    } catch (error) {
+      message = errorMessage(error);
+      if (error.status && error.status < 500) pendingBatchPushes.delete(batch.batch_id);
+      else message += " Sonucu yenile veya aynı istek düğmesiyle kontrol et. Yeni gönderim başlatma.";
+    } finally {
+      batchFinancialBusy = false; state.reviewBusy = false; reviewControls();
+      await loadDocuments(); await loadBatches();
+      if (state.selectedId) { try { state.document = await json(pathFor(state.selectedId)); detail(state.document); await readRecovery(); if (state.document.document_type === "bank_statement") await readBank(); } catch (_) { state.reviewNeedsRefresh = true; } }
+      if (message) { el("batch-error").textContent = message; el("batch-error").hidden = false; }
+    }
+  }
   async function loadBatches(offset = batchOffset) {
-    if (batchLoading) return;
+    if (batchLoading || batchFinancialBusy) return;
     batchLoading = true; el("batch-error").hidden = true;
     for (const id of ["batch-refresh", "batch-previous", "batch-next"]) el(id).disabled = true;
     let total = 0;
     try {
-      const data = await json(`/api/batch?limit=20&offset=${offset}`); batchOffset = offset; total = data.total; batchHasActive = data.items.some(batch => ["queued", "running"].includes(batch.extraction_run?.status));
+      const data = await json(`/api/batch?limit=20&offset=${offset}`); batchOffset = offset; total = data.total; batchHasActive = data.items.some(batch => ["queued", "running"].includes(batch.extraction_run?.status) || batch.push_run?.status === "running");
+      const selectedPlans = new Set(Array.from(el("batch-list").querySelectorAll("input[data-batch-plan]:checked")).map(c => c.dataset.batchPlan));
       const openBatches = new Set(Array.from(el("batch-list").querySelectorAll("details[open]")).map(card => card.dataset.batchId));
       el("batch-list").replaceChildren();
       el("batch-message").textContent = `${total} toplu yükleme · ${offset + 1}–${offset + data.items.length}`;
@@ -984,6 +1074,7 @@
           start.disabled = (!!active && !pendingBatchRuns.has(batch.batch_id)) || batchStarting || state.reviewBusy || (!pendingBatchRuns.has(batch.batch_id) && !(batch.pending || (retryFailed && batch.items.some(item => item.status === "failed"))));
           start.addEventListener("click", () => startBatchExtraction(batch.batch_id, retryFailed)); card.append(start);
         }
+        renderBatchPush(card, batch, selectedPlans);
         for (const item of batch.items) {
           const row = node("p", `${item.filename || item.id} · ${label(statuses, item.status)}`);
           if (item.status !== "missing") {
@@ -1020,7 +1111,7 @@
     } finally { batchStarting = false; await loadBatches(); if (actionError) { el("batch-error").textContent = actionError; el("batch-error").hidden = false; } }
   }
   window.setInterval(() => {
-    if (auth.user && !document.hidden && !batchStarting && !batchLoading && (batchHasActive || pendingBatchRuns.size > 0)) void loadBatches();
+    if (auth.user && !document.hidden && !batchStarting && !batchLoading && (batchHasActive || pendingBatchRuns.size > 0 || pendingBatchPushes.size > 0)) void loadBatches();
   }, 5000);
   async function uploadFiles(files, retry = false, kind = "files") {
     if (state.uploadBusy || files.length === 0) return;

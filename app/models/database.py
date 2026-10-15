@@ -283,6 +283,30 @@ class UploadBatch(Base):
     document_ids = Column(JSON, nullable=False)
     failed_files = Column(JSON, nullable=False)
     created_at = Column(DateTime, nullable=False, default=utc_now)
+    qbo_plans = Column(JSON, nullable=False, default=dict, server_default="{}")
+    revision = Column(Integer, nullable=False, default=1, server_default="1")
+    __mapper_args__ = {"version_id_col": revision}
+
+
+class BatchPushRun(Base):
+    """An explicit HTTP push; interrupted runs are never replayed by a worker."""
+    __tablename__ = "batch_push_runs"
+    __table_args__ = (
+        UniqueConstraint("company_id", "request_key", name="uq_batch_push_request"),
+        UniqueConstraint("batch_id", "active_key", name="uq_batch_push_active"),
+    )
+    id = Column(String(50), primary_key=True)
+    batch_id = Column(String(50), ForeignKey("upload_batches.id"), nullable=False)
+    company_id = Column(UUID(as_uuid=False), ForeignKey("companies.id"), nullable=False, index=True)
+    request_key = Column(String(36), nullable=False)
+    selection = Column(JSON, nullable=False)
+    items = Column(JSON, nullable=False)
+    status = Column(String(30), nullable=False)
+    active_key = Column(String(10), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+    finished_at = Column(DateTime, nullable=True)
+    revision = Column(Integer, nullable=False, default=1, server_default="1")
+    __mapper_args__ = {"version_id_col": revision}
 
 
 class BatchExtractionRun(Base):

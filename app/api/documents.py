@@ -164,6 +164,7 @@ def get_bank_workflow(document_id: str):
 
 
 class DocumentStatus(BaseModel):
+    batch_id: Optional[str] = None
     id: str
     filename: str
     status: ProcessingStatus
@@ -346,6 +347,7 @@ async def get_document(document_id: str):
     document = _load_document(document_id)
 
     return DocumentStatus(
+        batch_id=document.get("batch_id"),
         id=document["id"],
         filename=document["filename"],
         status=document["status"],
@@ -1665,6 +1667,8 @@ async def push_to_qbo(
 ):
     document = _load_document(document_id)
     document_type = document.get("document_type")
+    if request.expected_revision is not None and request.expected_revision != document.get("_revision"):
+        raise HTTPException(409, "Document changed; reload and preview before pushing")
 
     if document_type == DocumentType.BANK_STATEMENT:
         if document.get("status") not in {ProcessingStatus.EXTRACTED, ProcessingStatus.MATCHED, ProcessingStatus.PUSHED}:
