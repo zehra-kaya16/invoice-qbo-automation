@@ -88,6 +88,7 @@ class QBOPlanRequest(BaseModel):
 
 
 class QBOPlanPreviewResponse(BaseModel):
+    attachment: Optional[dict] = None
     realm_id: Optional[str] = None
     document_id: str
     create_as: str
@@ -563,7 +564,10 @@ async def build_invoice_qbo_plan(
             detail=str(exc),
         ) from exc
 
+    from app.services.persistence.attachment_sources import prepare_invoice_attachment
+    attachment = prepare_invoice_attachment(doc)
     return QBOPlanPreviewResponse(
+        attachment=attachment if attachment.get("converted_from") else None,
         realm_id=getattr(client, "realm_id", None),
         document_id=document_id,
         create_as=request.create_as,

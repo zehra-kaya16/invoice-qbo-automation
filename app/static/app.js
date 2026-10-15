@@ -6,7 +6,7 @@
   let accountBusy = false;
   const state = {
     offset: 0, limit: 20, total: 0, uploadBusy: false, listLoading: false,
-    listRequest: 0, listController: null, selectedId: null,
+    previewUrl: null, listRequest: 0, listController: null, selectedId: null,
     sourceRequest: 0, sourceController: null, sourceUrl: null,
     reviewRequest: 0, reviewController: null, reviewBusy: false, reviewLoading: false,
     document: null, extraction: null, dirty: false, reviewNeedsRefresh: false,
@@ -161,6 +161,8 @@
     el("source-viewer").replaceChildren();
     if (state.sourceUrl) URL.revokeObjectURL(state.sourceUrl);
     state.sourceUrl = null;
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+    state.previewUrl = null;
     el("source-download").removeAttribute("href");
     el("source-download").hidden = true;
   }
@@ -222,6 +224,15 @@
         });
         image.src = state.sourceUrl;
         el("source-viewer").replaceChildren(image);
+      } else if (media === "image/heic") {
+        showSourceMessage("HEIC önizlemesi hazırlanıyor…");
+        const preview = await request(`${pathFor(id)}/source/preview`, {signal:controller.signal});
+        const converted = await preview.blob();
+        if (sequence !== state.sourceRequest) return;
+        state.previewUrl = URL.createObjectURL(converted);
+        const image = node("img"); image.alt = `${document.filename} önizlemesi`;
+        image.addEventListener("error", () => { if (sequence === state.sourceRequest) showSourceMessage("HEIC önizlemesi açılamadı. Kaynak dosyayı indirerek kontrol edebilirsin."); });
+        image.src = state.previewUrl; el("source-viewer").replaceChildren(image);
       } else {
         showSourceMessage("Bu dosya türü tarayıcıda önizlenemiyor. Kaynak dosyayı indirerek açabilirsin.");
       }
@@ -863,7 +874,7 @@
         : "QBO işlem kaydı korunuyor. Bu belge tekrar gönderilemez.";
     } else if (!waiting) el("qbo-message").textContent = qbo.uncertain || state.reviewNeedsRefresh ? "Sonuç doğrulanamadı. Önce Durumu yenile ile sunucudaki kaydı kontrol et."
       : !allowed ? "Belgeyi kaydet, doğrulama hatalarını düzelt ve onayla."
-      : qbo.ready ? `Bağlı QBO şirketi: ${qbo.realm}. Seçimlerini kontrol edip planı önizle. Kaynak dosya gönderime eklenecek.` : "QBO seçeneklerini yükle; satıcı ve hesaplarını seç.";
+      : qbo.ready ? `Bağlı QBO şirketi: ${qbo.realm}. Seçimlerini kontrol edip planı önizle. HEIC kaynaklar PNG kopyasıyla, diğer kaynaklar özgün biçimiyle eklenecek.` : "QBO seçeneklerini yükle; satıcı ve hesaplarını seç.";
   }
   function fillOptions(id, items, placeholder) {
     const select = el(id); select.replaceChildren(node("option", placeholder)); select.firstChild.value = "";
@@ -907,7 +918,7 @@
         const target = el("qbo-plan"); target.replaceChildren(node("h3", "Gönderim planı")); target.hidden = false;
         summaryRows(target, {company: qbo.realm, kind: data.create_as, vendor: data.vendor.name, account: data.account.name,
           bank: body.bank_account_id ? el("qbo-bank").selectedOptions[0].textContent : "—", currency: data.currency_check.document_currency,
-          home: data.currency_check.home_currency, attachment: "Kaynak dosya eklenecek"}, [["company", "QBO şirket ID"], ["kind", "İşlem türü"], ["vendor", "Satıcı"], ["account", "Gider hesabı"], ["bank", "Banka hesabı"], ["currency", "Belge para birimi"], ["home", "QBO ana para birimi"], ["attachment", "Ek"]]);
+          home: data.currency_check.home_currency, attachment: data.attachment?.converted_from ? `${data.attachment.file_name} · HEIC kaynağının PNG kopyası` : "Kaynak dosya eklenecek"}, [["company", "QBO şirket ID"], ["kind", "İşlem türü"], ["vendor", "Satıcı"], ["account", "Gider hesabı"], ["bank", "Banka hesabı"], ["currency", "Belge para birimi"], ["home", "QBO ana para birimi"], ["attachment", "Ek"]]);
         summaryRows(target, data.plan.kwargs, [["amount", "Toplam tutar"], ["date", "İşlem tarihi"], ["due_date", "Vade tarihi"], ["description", "Açıklama"]]);
         target.append(node("p", "Belge toplamı seçilen gider hesabına tek işlem olarak yazılır.", "muted small"));
       } else {

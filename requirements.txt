@@ -28,3 +28,6 @@ anthropic>=0.18.0
 
 # Excel export
 openpyxl>=3.1.5,<4
+
+# HEIC input and browser preview
+pillow-heif>=1.1.1,<2

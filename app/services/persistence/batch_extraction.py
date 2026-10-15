@@ -60,9 +60,14 @@ def enqueue(batch_id, user, request_key, retry_failed=False):
                 if previous.batch_id != batch_id or previous.retry_failed != retry_failed:
                     raise HTTPException(409, "Extraction key belongs to a different request")
                 return public_run(previous)
-            active = session.scalar(select(BatchExtractionRun.id).where(
+            active = session.scalar(select(BatchExtractionRun).where(
                 BatchExtractionRun.batch_id == batch_id, BatchExtractionRun.active_key == "active"))
             if active:
+                # The first request may commit between the nonce lookup above
+                # and this active-run lookup. Replaying that same request is
+                # still idempotent, rather than an unrelated active-job conflict.
+                if active.request_key == key and active.retry_failed == retry_failed:
+                    return public_run(active)
                 raise HTTPException(409, "Batch extraction is already queued or running")
             # Queue selection must not load source/crop bytes from completed
             # bank documents just to determine whether they are eligible.

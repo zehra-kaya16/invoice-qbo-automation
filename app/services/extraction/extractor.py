@@ -95,6 +95,8 @@ class DocumentExtractor:
         ):
             raise ValueError("At least one non-empty page image is required")
 
+        from app.services.extraction.heic import is_heic, heic_to_png
+        page_images = [heic_to_png(page) if is_heic(page) else page for page in page_images]
         encoded = [base64.b64encode(page).decode("utf-8") for page in page_images]
         media_types = ["image/jpeg" if page.startswith(b"\xff\xd8\xff") else "image/png" for page in page_images]
         if self.provider == "openai":

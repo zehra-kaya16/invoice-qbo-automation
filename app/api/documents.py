@@ -328,6 +328,23 @@ async def get_document_source(document_id: str):
     })
 
 
+@router.get("/{document_id}/source/preview")
+def get_document_preview(document_id: str):
+    from app.services.extraction.heic import heic_to_png, is_heic, HEICImageError
+    document = _load_document(document_id)
+    content = document.get("content")
+    if not isinstance(content, bytes) or not content:
+        raise HTTPException(404, "Document source is unavailable")
+    if document.get("content_type") != "image/heic" and not is_heic(content):
+        raise HTTPException(415, "Converted preview is available only for HEIC images")
+    try:
+        png = heic_to_png(content)
+    except HEICImageError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return Response(content=png, media_type="image/png", headers={
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Disposition": "inline"})
+
+
 @router.get("/{document_id}/checks/{check_index}/source")
 def get_check_source(document_id: str, check_index: int):
     document = _load_document(document_id)
@@ -455,6 +472,9 @@ def _process_document_sync(document_id: str, expected_revision: int | None = Non
                     "PDF contains no readable pages."
                 )
         else:
+            if content_type == "image/heic":
+                from app.services.extraction.heic import heic_to_png
+                content = heic_to_png(content)
             page_images = [content]
 
         document_type = extractor.classify_document(
@@ -1957,6 +1977,10 @@ async def push_to_qbo(
     attachments_uploaded = 0
     response_errors = []
 
+    if request.attach_documents:
+        from app.services.persistence.attachment_sources import prepare_invoice_attachment
+        prepare_invoice_attachment(document)
+
     # Bundan önce QBO'ya hiçbir write yapılmadı.
     # Şimdi external write başlamak üzere.
     document["qbo_push_context"] = {"realm_id": getattr(client, "realm_id", None),
@@ -2034,22 +2058,8 @@ async def push_to_qbo(
         temp_path = None
 
         try:
-            filename = (
-                document.get("filename")
-                or f"{document_id}.bin"
-            )
-
-            content_type = (
-                document.get("content_type")
-                or "application/octet-stream"
-            )
-
-            file_content = document.get("content")
-
-            if not file_content:
-                raise ValueError(
-                    "Original document content is missing"
-                )
+            from app.services.persistence.attachment_sources import invoice_attachment
+            filename, content_type, file_content = invoice_attachment(document)
 
             suffix = Path(filename).suffix
 

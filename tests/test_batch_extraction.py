@@ -310,3 +310,21 @@ def test_recovery_refuses_financial_claim_and_preserves_document(data, monkeypat
     before = copy.deepcopy(DocumentRepository().get(id))
     with pytest.raises(ValueError):recover_run(run["run_id"])
     assert DocumentRepository().get(id) == before
+
+
+@pytest.mark.parametrize('changed_body',[False,True])
+def test_same_nonce_committed_between_lookup_and_active_check(data,monkeypatch,changed_body):
+    from sqlalchemy.orm import Session
+    first=start(data).json();key=first['request_key'];original=Session.scalar;missed=[]
+    def scalar(session,statement,*args,**kwargs):
+        # Simulate the concurrent request becoming visible only at the active lookup.
+        sql=str(statement)
+        if not missed and 'batch_extraction_runs.request_key =' in sql:
+            missed.append(True)
+            return None
+        return original(session,statement,*args,**kwargs)
+    monkeypatch.setattr(Session,'scalar',scalar)
+    response=start(data,key=key,retry=changed_body)
+    assert missed
+    assert response.status_code==(409 if changed_body else 202),response.text
+    if not changed_body:assert response.json()['run_id']==first['run_id']

@@ -159,6 +159,10 @@ def _bank_identity(document, entry, transaction):
 def _attachment_info(document, entry, key):
     if key == 'source':
         kind = 'Bill' if document.get('qbo_transaction_type') == 'bill' else 'Purchase'
+        if document.get('qbo_attachment_source') is not None:
+            from app.services.persistence.attachment_sources import invoice_attachment
+            filename, content_type, content = invoice_attachment(document)
+            return kind, document['qbo_transaction_id'], document.get('qbo_attachment_marker'), filename, len(content)
         content = document.get('content')
         return kind, document['qbo_transaction_id'], document.get('qbo_attachment_marker'), document['filename'], len(content) if isinstance(content,bytes) else None
     path = Path(entry.get('image_path') or '')
@@ -297,11 +301,11 @@ def recover(document_id: str, request: RecoveryRequest):
                 temp_path = None
                 try:
                     if request.key == 'source':
-                        content=document.get('content')
-                        if not isinstance(content,bytes) or not content:raise HTTPException(409,'Source file is unavailable')
+                        from app.services.persistence.attachment_sources import invoice_attachment
+                        filename, content_type, content = invoice_attachment(document)
                         with tempfile.NamedTemporaryFile(delete=False,suffix=Path(filename).suffix) as temp:
                             temp.write(content);temp_path=temp.name
-                        path=temp_path;content_type=document.get('content_type') or 'application/octet-stream'
+                        path=temp_path
                         document.update(qbo_attachment_marker=marker,qbo_attachment_push_status='uploading',qbo_attachment_started_at=datetime.now(timezone.utc).isoformat())
                     else:
                         content_type='image/png'

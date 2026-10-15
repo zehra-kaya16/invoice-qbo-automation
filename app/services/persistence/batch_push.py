@@ -107,6 +107,8 @@ def preview(id, body, batch_id):
             raise HTTPException(409, "Document validation must be valid before batch push")
         request = qbo.QBOPlanRequest(**{k: body.get(k) for k in qbo.QBOPlanRequest.model_fields})
         result = asyncio.run(qbo.build_invoice_qbo_plan(id, request)).model_dump(mode="json")
+        if result.get("attachment") is None:
+            result.pop("attachment", None)  # preserve saved step-107 plans for other source formats
     load_document(id, body["expected_revision"], batch_id)  # remote reads may take time
     return json.loads(json.dumps(result, default=_json_default))
 
