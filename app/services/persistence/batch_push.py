@@ -207,7 +207,7 @@ def document_result(id):
     if not doc:
         return {}, False
     fields = {"transaction_id": doc.get("qbo_transaction_id"),
-              "transaction_type": doc.get("qbo_transaction_type"), "attachment_id": doc.get("qbo_attachment_id")}
+              "transaction_type": doc.get("qbo_transaction_type"), "doc_number": doc.get("qbo_doc_number"), "attachment_id": doc.get("qbo_attachment_id")}
     if doc.get("document_type") == "bank_statement":
         fields["bank_results"] = {
             "categories": [{k: c.get(k) for k in ("qbo_transaction_id", "qbo_category_push_status", "qbo_category_account_id")}
@@ -216,7 +216,7 @@ def document_result(id):
                        for c in doc.get("check_match_results") or []]}
         done = doc.get("status") == "pushed"
     else:
-        done = doc.get("status") == "pushed" and doc.get("qbo_push_state") == "succeeded" and bool(doc.get("qbo_attachment_id"))
+        done = doc.get("status") == "pushed" and doc.get("qbo_push_state") == "succeeded" and bool(doc.get("qbo_attachment_id")) and not doc.get("qbo_doc_number_needs_review")
     return fields, done
 
 

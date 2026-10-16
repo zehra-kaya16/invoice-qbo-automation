@@ -260,7 +260,7 @@
 
   const receiptFields = [
     ["vendor", "Satıcı", "text"], ["vendor_address", "Satıcı adresi", "text"],
-    ["date", "Belge tarihi", "date"], ["invoice_number", "Fatura numarası", "text"],
+    ["date", "Belge tarihi", "date"], ["invoice_number", "Fatura / fiş numarası", "text"],
     ["due_date", "Vade tarihi", "date"], ["currency", "Para birimi", "currency"],
     ["total_amount", "Toplam tutar", "money"], ["subtotal", "Ara toplam", "money"],
     ["tax_amount", "Vergi", "money"], ["tip_amount", "Bahşiş", "money"],
@@ -795,7 +795,7 @@
         if (data.transactions) {
           provider.append(node("p", `${data.transactions.length} deneme kimliğiyle eşleşen QBO kaydı bulundu.`));
           const empty = node("option", "QBO kaydı seç (tek eşleşme otomatik doğrulanabilir)"); empty.value=""; select.append(empty);
-          for (const txn of data.transactions) { const option=node("option",`${txn.type} ${txn.id} · ${txn.date} · ${txn.amount} ${txn.currency || ""}`);option.value=txn.id;select.append(option); }
+          for (const txn of data.transactions) { const option=node("option",`${txn.type} ${txn.id} · ${txn.date} · ${txn.amount} ${txn.currency || ""}${txn.doc_number ? ` · Belge no ${txn.doc_number}` : ""}`);option.value=txn.id;select.append(option); }
           select.hidden = data.transactions.length === 0;
         } else if (data.attachments) {
           provider.append(node("p", `QBO işlem ${data.transaction_id} üzerinde ${data.attachments.length} ek var. Kaynak: ${data.file_name} · ${data.size ?? "—"} bayt.`));
@@ -866,10 +866,10 @@
     el("qbo-result").replaceChildren(); el("qbo-result").hidden = !workflowLocked();
     if (workflowLocked()) {
       for (const [title, value] of [["Gönderim durumu", doc.qbo_push_state], ["QBO işlem türü", doc.qbo_transaction_type],
-        ["QBO işlem ID", doc.qbo_transaction_id], ["Ek ID", doc.qbo_attachment_id], ["Gönderim hatası", doc.qbo_push_error], ["Ek hatası", doc.qbo_attachment_error]]) {
+        ["QBO işlem ID", doc.qbo_transaction_id], ["QBO belge no", doc.qbo_doc_number], ["Ek ID", doc.qbo_attachment_id], ["Gönderim hatası", doc.qbo_push_error], ["Ek hatası", doc.qbo_attachment_error]]) {
         if (value) el("qbo-result").append(node("dt", title), node("dd", value));
       }
-      el("qbo-message").textContent = doc.qbo_attachment_error ? "QBO işlemi oluşturuldu; kaynak eki tamamlanamadı. Yukarıdaki işlem ID’sini QuickBooks’ta kontrol et. Yeniden işlem oluşturma."
+      el("qbo-message").textContent = doc.qbo_doc_number_needs_review ? "Mevcut QBO kaydının belge numarası planla farklı. QBO’daki aynı işlemi düzelt ve toparlanma ekranından doğrula." : doc.qbo_attachment_error ? "QBO işlemi oluşturuldu; kaynak eki tamamlanamadı. Yukarıdaki işlem ID’sini QuickBooks’ta kontrol et. Yeniden işlem oluşturma."
         : ["uncertain", "in_progress"].includes(doc.qbo_push_state) ? "Gönderim sonucu belirsiz veya işlem sürüyor. QuickBooks’taki kaydı kontrol et; tekrar gönderim kapalı."
         : "QBO işlem kaydı korunuyor. Bu belge tekrar gönderilemez.";
     } else if (!waiting) el("qbo-message").textContent = qbo.uncertain || state.reviewNeedsRefresh ? "Sonuç doğrulanamadı. Önce Durumu yenile ile sunucudaki kaydı kontrol et."
@@ -919,7 +919,7 @@
         summaryRows(target, {company: qbo.realm, kind: data.create_as, vendor: data.vendor.name, account: data.account.name,
           bank: body.bank_account_id ? el("qbo-bank").selectedOptions[0].textContent : "—", currency: data.currency_check.document_currency,
           home: data.currency_check.home_currency, attachment: data.attachment?.converted_from ? `${data.attachment.file_name} · HEIC kaynağının PNG kopyası` : "Kaynak dosya eklenecek"}, [["company", "QBO şirket ID"], ["kind", "İşlem türü"], ["vendor", "Satıcı"], ["account", "Gider hesabı"], ["bank", "Banka hesabı"], ["currency", "Belge para birimi"], ["home", "QBO ana para birimi"], ["attachment", "Ek"]]);
-        summaryRows(target, data.plan.kwargs, [["amount", "Toplam tutar"], ["date", "İşlem tarihi"], ["due_date", "Vade tarihi"], ["description", "Açıklama"]]);
+        summaryRows(target, data.plan.kwargs, [["doc_number", "QBO belge no"], ["amount", "Toplam tutar"], ["date", "İşlem tarihi"], ["due_date", "Vade tarihi"], ["description", "Açıklama"]]);
         target.append(node("p", "Belge toplamı seçilen gider hesabına tek işlem olarak yazılır.", "muted small"));
       } else {
         const response = await json(`${pathFor(id)}/push-to-qbo`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({...qbo.plan.body, expected_revision:qbo.plan.revision, attach_documents: true})});
@@ -997,7 +997,7 @@
     if (run) {
       card.append(node("h4", `QBO aktarımı · ${run.run_id}`), node("p", names[run.status] || run.status));
       for (const item of run.items) {
-        const result = node("p", `${item.id} · ${names[item.status] || item.status}${item.transaction_id ? ` · QBO ${item.transaction_type} ${item.transaction_id}` : ""}${item.attachment_id ? ` · Ek ${item.attachment_id}` : ""}${item.message ? ` · ${item.message}` : ""}`);
+        const result = node("p", `${item.id} · ${names[item.status] || item.status}${item.transaction_id ? ` · QBO ${item.transaction_type} ${item.transaction_id}` : ""}${item.doc_number ? ` · Belge no ${item.doc_number}` : ""}${item.attachment_id ? ` · Ek ${item.attachment_id}` : ""}${item.message ? ` · ${item.message}` : ""}`);
         if (item.bank_results) {
           for (const c of item.bank_results.categories) result.append(node("span", ` · Purchase ${c.qbo_transaction_id}: ${c.qbo_category_push_status || "—"}`));
           for (const c of item.bank_results.checks) result.append(node("span", ` · Çek eki ${c.qbo_transaction_id}: ${c.attachment_id || c.attachment_push_status || "—"}`));
@@ -1020,7 +1020,7 @@
         for (const c of data.plan.category_updates) card.append(node("p", `Purchase ${c.qbo_transaction_id} → ${c.category_name || c.account_id} (${c.account_id})`));
         for (const c of data.plan.check_attachments) card.append(node("p", `Çek ${c.check_index + 1}: ${c.qbo_transaction_type} ${c.qbo_transaction_id} kaydına ek`));
       } else {
-        const rows = node("div"); summaryRows(rows, {vendor:`${data.vendor.name} (${data.vendor.id})`, account:`${data.account.name} (${data.account.id})`, bank:plan.body.bank_account_id || "—", amount, currency:data.currency_check.document_currency, date:data.plan.kwargs.date, due:data.plan.kwargs.due_date, description:data.plan.kwargs.description}, [["vendor","Satıcı"],["account","Gider hesabı"],["bank","Banka hesap ID"],["amount","Tutar"],["currency","Para birimi"],["date","Tarih"],["due","Vade"],["description","Açıklama"]]); card.append(rows);
+        const rows = node("div"); summaryRows(rows, {vendor:`${data.vendor.name} (${data.vendor.id})`, account:`${data.account.name} (${data.account.id})`, bank:plan.body.bank_account_id || "—", number:data.plan.kwargs.doc_number || "—", amount, currency:data.currency_check.document_currency, date:data.plan.kwargs.date, due:data.plan.kwargs.due_date, description:data.plan.kwargs.description}, [["number","QBO belge no"],["vendor","Satıcı"],["account","Gider hesabı"],["bank","Banka hesap ID"],["amount","Tutar"],["currency","Para birimi"],["date","Tarih"],["due","Vade"],["description","Açıklama"]]); card.append(rows);
       }
       checkboxes.push(checkbox);
     }

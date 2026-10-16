@@ -47,8 +47,8 @@ def _active(status, started):
 def _items(document):
     items = []
     if document.get('document_type') in {DocumentType.INVOICE, DocumentType.RECEIPT}:
-        if document.get('qbo_push_state') in {'in_progress', 'uncertain'}:
-            items.append({'key':'transaction', 'label':'Bill/Expense oluşturma sonucu', 'status':document['qbo_push_state'],
+        if document.get('qbo_push_state') in {'in_progress', 'uncertain'} or document.get('qbo_doc_number_needs_review'):
+            items.append({'key':'transaction', 'label':'QBO belge numarası doğrulaması' if document.get('qbo_doc_number_needs_review') else 'Bill/Expense oluşturma sonucu', 'status':'needs_review' if document.get('qbo_doc_number_needs_review') else document['qbo_push_state'],
                           'transaction_id':document.get('qbo_transaction_id'), 'error':document.get('qbo_push_error'), 'can_retry':False})
         if document.get('qbo_transaction_id'):
             status = document.get('qbo_attachment_push_status')
@@ -140,6 +140,8 @@ def _invoice_identity(document, transaction, client):
     correct = correct and _money(transaction.get('amount')) == _money(args.get('amount'))
     correct = correct and transaction.get('expense_accounts') == [str(args.get('account_id'))]
     correct = correct and currency == context.get('currency')
+    if args.get('doc_number') is not None and str(transaction.get('doc_number') or '') != args['doc_number']:
+        raise HTTPException(409, 'QBO document number differs from the original write plan; correct the existing QBO transaction before verifying')
     if create_as == 'expense':
         correct = correct and str(transaction.get('bank_account_id')) == str(args.get('bank_account_id'))
     if not correct:
@@ -240,6 +242,8 @@ def recover(document_id: str, request: RecoveryRequest):
             _invoice_identity(document, found[0], client)
             document.update(qbo_transaction_id=str(found[0]['id']), qbo_transaction_type=create_as,
                             qbo_push_state='succeeded', qbo_push_error=None, status=ProcessingStatus.PUSHED)
+            if 'doc_number' in plan['kwargs']:
+                document.update(qbo_doc_number=found[0].get('doc_number'), qbo_doc_number_needs_review=False)
     elif request.key.startswith('category:'):
         if entry.get('review_status') not in {'approved','manual_override'} or not entry.get('reviewed_category'):
             raise HTTPException(409, 'No approved category was recorded')
@@ -273,6 +277,10 @@ def recover(document_id: str, request: RecoveryRequest):
         transaction = _read(client.get_recovery_transaction, transaction_type, str(target_id))
         if request.key == 'source':
             _invoice_identity(document, transaction, client)
+            if request.operation != 'inspect' and (document.get('qbo_push_context') or {}).get('plan', {}).get('kwargs', {}).get('doc_number') is not None:
+                document.update(qbo_doc_number=transaction.get('doc_number'), qbo_doc_number_needs_review=False)
+                if (document.get('qbo_push_error') or '').startswith('QBO document number differs'):
+                    document['qbo_push_error'] = None
         else:
             _bank_identity(document, entry, transaction)
         attachments = _read(client.get_recovery_attachments, kind, str(target_id))

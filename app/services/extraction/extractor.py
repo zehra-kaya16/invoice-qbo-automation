@@ -205,7 +205,7 @@ class DocumentExtractor:
         "vendor": null,
         "vendor_address": null,
         "date": null,
-        "invoice_number": "Invoice number if this is an invoice, otherwise null",
+        "invoice_number": "Visible invoice or receipt/document number, otherwise null",
         "due_date": "Invoice due date in YYYY-MM-DD format if visible, otherwise null",
         "total_amount": null,
         "subtotal": null,
@@ -223,6 +223,10 @@ class DocumentExtractor:
         ],
         "category_suggestion": null
         }
+
+        Preserve leading zeros and punctuation in invoice/receipt numbers.
+        For receipts, use only a printed receipt/document number; do not substitute
+        payment authorization codes, card numbers, merchant IDs or transaction IDs.
 
         Use YYYY-MM-DD for the date.
 

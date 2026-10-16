@@ -164,6 +164,8 @@ def get_bank_workflow(document_id: str):
 
 
 class DocumentStatus(BaseModel):
+    qbo_doc_number: Optional[str] = None
+    qbo_doc_number_needs_review: bool = False
     batch_id: Optional[str] = None
     id: str
     filename: str
@@ -364,6 +366,8 @@ async def get_document(document_id: str):
     document = _load_document(document_id)
 
     return DocumentStatus(
+        qbo_doc_number=document.get("qbo_doc_number"),
+        qbo_doc_number_needs_review=document.get("qbo_doc_number_needs_review", False),
         batch_id=document.get("batch_id"),
         id=document["id"],
         filename=document["filename"],
@@ -2029,6 +2033,8 @@ async def push_to_qbo(
         # 7. Başarılı QBO write'ı kaydet
         # ---------------------------------------------
 
+        if "doc_number" in result:
+            document["qbo_doc_number"] = result["doc_number"]
         mark_invoice_push_succeeded(
             document=document,
             transaction_id=transaction_id,
@@ -2053,6 +2059,14 @@ async def push_to_qbo(
                 "Check QuickBooks Online before trying again."
             ),
         ) from exc
+
+    expected_number = plan["kwargs"].get("doc_number")
+    if expected_number is not None and "doc_number" in result and result["doc_number"] != expected_number:
+        # The financial ID is already persisted. Never recreate this transaction.
+        document["qbo_doc_number_needs_review"] = True
+        document["qbo_push_error"] = "QBO document number differs from the approved plan; correct and verify the existing transaction"
+        _save_document(document)
+        raise HTTPException(502, document["qbo_push_error"])
 
     if request.attach_documents:
         temp_path = None

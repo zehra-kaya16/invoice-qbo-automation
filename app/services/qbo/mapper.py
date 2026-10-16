@@ -1,6 +1,7 @@
 from typing import Optional
 
 from app.schemas.documents import ReceiptData
+from app.services.qbo.document_number import normalize_document_number
 
 
 def build_qbo_create_plan(
@@ -44,11 +45,14 @@ def build_qbo_create_plan(
         )
 
     transaction_date = data.date.isoformat()
+    doc_number = normalize_document_number(data.invoice_number)
+    number_args = {"doc_number": doc_number} if doc_number is not None else {}
 
     if create_as == "expense":
         return {
             "method": "create_expense",
             "kwargs": {
+                **number_args,
                 "vendor_id": vendor_id,
                 "account_id": account_id,
                 "amount": data.total_amount,
@@ -67,6 +71,7 @@ def build_qbo_create_plan(
     return {
         "method": "create_bill",
         "kwargs": {
+            **number_args,
             "vendor_id": vendor_id,
             "account_id": account_id,
             "amount": data.total_amount,

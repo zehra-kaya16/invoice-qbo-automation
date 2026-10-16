@@ -256,7 +256,7 @@ class HEICRecoveryQBO(RecoveryQBO):
     def create_bill(self,**kwargs):
         self.writes+=1
         self.transactions['701']={'id':'701','type':'bill','date':kwargs['date'],'amount':str(kwargs['amount']),
-            'vendor_id':kwargs['vendor_id'],'currency':'USD','expense_accounts':[kwargs['account_id']],'marker':kwargs['recovery_marker']}
+            'vendor_id':kwargs['vendor_id'],'doc_number':kwargs.get('doc_number'),'currency':'USD','expense_accounts':[kwargs['account_id']],'marker':kwargs['recovery_marker']}
         doc=next(d for d in self.docs() if d.get('qbo_push_state')=='in_progress')
         assert doc['qbo_attachment_source']['content_type']=='image/png' if self.require_prepared else True
         return {'id':'701','type':'bill'}

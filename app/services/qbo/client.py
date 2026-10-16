@@ -986,12 +986,17 @@ class QBOClient:
         due_date: str = None,
         description: str = None,
         recovery_marker: str = None,
+        doc_number: str = None,
     ) -> dict:
         """
         Create a bill (accounts payable) in QBO.
         """
 
+        from app.services.qbo.document_number import normalize_document_number
+        number = normalize_document_number(doc_number)
         bill = Bill()
+        if number is not None:
+            bill.DocNumber = number
         if recovery_marker:
             bill.PrivateNote = recovery_marker
         bill.TxnDate = date
@@ -1023,6 +1028,7 @@ class QBOClient:
             "amount": amount,
             "vendor_id": vendor_id,
             "date": date,
+            "doc_number": getattr(bill, "DocNumber", None),
         }
 
     def create_expense(
@@ -1034,6 +1040,7 @@ class QBOClient:
         description: str = None,
         bank_account_id: str = None,
         recovery_marker: str = None,
+        doc_number: str = None,
     ) -> dict:
         """
         Create an expense (purchase) in QBO.
@@ -1051,7 +1058,11 @@ class QBOClient:
             AccountBasedExpenseLineDetail,
         )
 
+        from app.services.qbo.document_number import normalize_document_number
+        number = normalize_document_number(doc_number)
         purchase = Purchase()
+        if number is not None:
+            purchase.DocNumber = number
         if recovery_marker:
             purchase.PrivateNote = recovery_marker
         purchase.PaymentType = "Cash"
@@ -1091,6 +1102,7 @@ class QBOClient:
             "amount": amount,
             "vendor_id": vendor_id,
             "date": date,
+            "doc_number": getattr(purchase, "DocNumber", None),
         }
 
     def update_purchase_category(
@@ -1231,7 +1243,8 @@ class QBOClient:
                 "amount": str(getattr(value, "TotalAmt", getattr(value, "Amount", ""))), "currency": _currency_ref(getattr(value, "CurrencyRef", None)),
                 "vendor_id": _currency_ref(getattr(value, "VendorRef", None) if transaction_type == "bill" else getattr(value, "EntityRef", None)),
                 "bank_account_id": _currency_ref(getattr(value, "AccountRef", None)),
-                "expense_accounts": lines, "marker": getattr(value, "PrivateNote", None)}
+                "expense_accounts": lines, "marker": getattr(value, "PrivateNote", None),
+                "doc_number": getattr(value, "DocNumber", None)}
 
     def find_recovery_transactions(self, create_as: str, date: str, marker: str) -> list[dict]:
         Date.fromisoformat(date)
