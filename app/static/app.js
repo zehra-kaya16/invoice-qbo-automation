@@ -51,6 +51,47 @@
     return response;
   }
   async function json(url, options) { return (await request(url, options)).json(); }
+  let analyticsBusy = false;
+  const analyticsEvents = {"document.uploaded":"Yüklenen belge", "extraction.started":"Başlayan extraction", "extraction.succeeded":"Başarılı extraction", "extraction.failed":"Başarısız extraction",
+    "qbo.transaction.started":"Başlayan Bill/Expense yazımı", "qbo.transaction.succeeded":"Doğrulanan Bill/Expense sonucu", "qbo.transaction.uncertain":"Belirsiz Bill/Expense sonucu",
+    "category.succeeded":"Doğrulanan kategori yazımı", "category.uncertain":"Belirsiz kategori yazımı", "attachment.succeeded":"Doğrulanan kaynak/çek eki", "attachment.uncertain":"Belirsiz kaynak/çek eki",
+    "reconciliation.completed":"Tamamlanan ekstre/çek inceleme akışı", "api.request":"Yetkili API isteği"};
+  function analyticsTable(target, title, headers, rows) {
+    target.append(node("h3",title));
+    if (!rows.length) {target.append(node("p","Bu dönemde ölçüm yok.","muted small"));return;}
+    const wrapper=node("div",undefined,"table-scroll"), table=node("table"), head=node("thead"), line=node("tr"), body=node("tbody");
+    for (const value of headers) line.append(node("th",value));head.append(line);
+    for (const values of rows) {const row=node("tr");for(const value of values) row.append(node("td",String(value)));body.append(row);}
+    table.append(head,body);wrapper.append(table);target.append(wrapper);
+  }
+  async function loadAnalytics() {
+    if (analyticsBusy || !auth.user || !el("analytics-panel").open) return;
+    analyticsBusy=true;el("analytics-refresh").disabled=true;el("analytics-hours").disabled=true;el("analytics-error").hidden=true;
+    el("analytics-message").textContent="İstatistikler yükleniyor…";
+    try {
+      const data=(await json(`/api/analytics/summary?hours=${el("analytics-hours").value}`)).data;
+      for (const id of ["analytics-inventory","analytics-breakdown","analytics-events","analytics-timers"]) el(id).replaceChildren();
+      const inventory=data.inventory, cards=[["Toplam belge",inventory.total],["Extraction hatasında",inventory.by_status.failed || 0],
+        ["Finansal sonucu doğrulanan belge",inventory.confirmed_financial_documents],["Finansal sonucu belirsiz belge",inventory.uncertain_financial_documents]];
+      for(const [title,value] of cards){const card=node("div",undefined,"analytics-stat");card.append(node("span",title,"muted small"),node("strong",String(value)));el("analytics-inventory").append(card);}
+      analyticsTable(el("analytics-breakdown"),"Mevcut belge durumları · tüm kayıtlar",["Durum","Belge"],Object.entries(inventory.by_status).map(([k,v])=>[label(statuses,k),v]));
+      analyticsTable(el("analytics-breakdown"),"Belge türleri · tüm kayıtlar",["Tür","Belge"],Object.entries(inventory.by_type).map(([k,v])=>[k==="unclassified"?"Henüz sınıflandırılmadı":label(types,k),v]));
+      analyticsTable(el("analytics-events"),"Seçili dönemde kaydedilen olaylar",["Olay","Sayı"],Object.entries(data.counters).map(([k,v])=>[analyticsEvents[k] || k,v]));
+      const percent=(v)=>v===null?"Ölçüm yok":`${(v*100).toLocaleString("tr-TR",{maximumFractionDigits:1})}%`;
+      el("analytics-events").append(node("p",`Extraction başarı oranı: ${percent(data.extraction.success_rate)} · AI tarafından bildirilen ortalama güven: ${percent(data.extraction.reported_confidence.avg)}`,"muted small"));
+      el("analytics-events").append(node("p","Güven değeri doğruluk testi değildir. Toparlanmayla doğrulanan sonuçlar da sayılır; doğrulama yeni bir QBO işlemi oluşturulduğu anlamına gelmez.","muted small"));
+      const names={"extraction.duration":"Extraction", "qbo.transaction.duration":"Bill/Expense sonucu", "api.request.duration":"Yetkili API yanıtı"};
+      const ms=(v)=>Number(v).toLocaleString("tr-TR",{maximumFractionDigits:1});
+      analyticsTable(el("analytics-timers"),"Ölçülen süreler (ms)",["İşlem","Ölçüm","Ort.","P50","P95"],Object.entries(data.timers).map(([k,v])=>[names[k] || k,v.count,ms(v.avg_ms),ms(v.p50_ms),ms(v.p95_ms)]));
+      el("analytics-message").textContent=`Şirket: ${auth.user.company.name} · Güncellendi: ${new Date(data.period_end).toLocaleString("tr-TR")} · Son ${data.period_hours} saat`;
+    } catch(error) {
+      for (const id of ["analytics-inventory","analytics-breakdown","analytics-events","analytics-timers"]) el(id).replaceChildren();
+      el("analytics-error").textContent=errorMessage(error);el("analytics-error").hidden=false;el("analytics-message").textContent="İstatistikler güncellenemedi.";
+    } finally {analyticsBusy=false;el("analytics-refresh").disabled=false;el("analytics-hours").disabled=false;}
+  }
+  el("analytics-panel").addEventListener("toggle",()=>{if(el("analytics-panel").open)void loadAnalytics();});
+  el("analytics-refresh").addEventListener("click",()=>void loadAnalytics());
+  el("analytics-hours").addEventListener("change",()=>void loadAnalytics());
   let exportBusy = false;
   el("export-form").addEventListener("submit", async event => {
     event.preventDefault();

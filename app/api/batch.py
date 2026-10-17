@@ -124,6 +124,8 @@ def _persist_batch(user, scope, key, fingerprint, total_files, prepared, errors)
                 session.add(Document(api_id=document_id, company_id=user.company_id, filename=filename,
                                      content_type=media, file_size=len(content), source_content=stored_content, storage_key=state.get("storage_key"),
                                      status="uploaded", workflow_state=state))
+                from app.services.analytics.tracker import track_transition
+                track_transition(session, user.company_id, document_id, 1, None, dict(state, file_size=len(content)))
             batch = UploadBatch(id=batch_id, company_id=user.company_id, request_key=key,
                                 fingerprint=fingerprint, total_files=total_files, document_ids=ids,
                                 failed_files=errors)

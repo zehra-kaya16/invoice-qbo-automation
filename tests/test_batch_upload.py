@@ -153,7 +153,7 @@ def test_migration_upgrade_preserves_existing_document(tmp_path):
     run(["-m", "alembic", "upgrade", "100a1d0c2026"])
     run(["-c", "from app.services.persistence.repository import DocumentRepository; DocumentRepository().save({'id':'doc_old','filename':'old.pdf','company_id':'default','content':b'original','status':'pushed','qbo_transaction_id':'old-qbo','qbo_push_state':'succeeded'})"])
     run(["-m", "alembic", "upgrade", "head"])
-    assert "107a1d0c2026" in run(["-m", "alembic", "current"]).stdout
+    assert "112a1d0c2026" in run(["-m", "alembic", "current"]).stdout
     run(["-c", "from fastapi.testclient import TestClient; from app.main import app; from tests.auth_helpers import override_authenticated_api; from app.services.persistence.repository import DocumentRepository; override_authenticated_api(app); c=TestClient(app); assert c.get('/ready').status_code==200; r=c.post('/api/batch/upload',headers={'Idempotency-Key':'00000000-0000-4000-8000-000000000104'},files={'files':('new.pdf',b'%PDF','application/pdf')}); assert r.status_code==200,r.text; assert DocumentRepository().get('doc_old')['qbo_transaction_id']=='old-qbo'; assert DocumentRepository().get('doc_old')['content']==b'original'"])
     run(["-m", "alembic", "downgrade", "100a1d0c2026"])
     run(["-c", "from app.services.persistence.repository import DocumentRepository; assert DocumentRepository().get('doc_old')['qbo_transaction_id']=='old-qbo'"])

@@ -7,6 +7,7 @@ import uuid
 import copy
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -461,6 +462,7 @@ def _process_document_sync(document_id: str, expected_revision: int | None = Non
 
     _ensure_document_can_be_extracted(document)
 
+    extraction_clock = time.perf_counter()
     try:
         document["extraction_claim"] = uuid.uuid4().hex
         document["extraction_started_at"] = datetime.now(timezone.utc).isoformat()
@@ -571,6 +573,7 @@ def _process_document_sync(document_id: str, expected_revision: int | None = Non
         document["error"] = str(exc)
     finally:
         document.pop("extraction_claim", None)
+        document["extraction_duration_ms"] = (time.perf_counter() - extraction_clock) * 1000
         _save_document(document)
 
 def _build_extraction_response(

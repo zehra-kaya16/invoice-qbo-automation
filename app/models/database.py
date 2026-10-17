@@ -15,6 +15,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Index,
     LargeBinary,
     Numeric,
     String,
@@ -25,6 +26,24 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
+
+
+class AnalyticsEvent(Base):
+    __tablename__ = "analytics_events"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(UUID(as_uuid=False), ForeignKey("companies.id"), nullable=False)
+    event_key = Column(String(255), nullable=False)
+    name = Column(String(64), nullable=False)
+    document_id = Column(String(120))
+    value = Column(Float)
+    duration_ms = Column(Float)
+    request_method = Column(String(10))
+    status_code = Column(Integer)
+    created_at = Column(DateTime, nullable=False, default=lambda: utc_now())
+    __table_args__ = (
+        UniqueConstraint("company_id", "event_key", name="uq_analytics_event_key"),
+        Index("ix_analytics_company_time_name", "company_id", "created_at", "name"),
+    )
 
 
 def generate_uuid():

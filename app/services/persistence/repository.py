@@ -171,6 +171,7 @@ class DocumentRepository:
                     if row.workflow_state.get("company_id") != company_key:
                         raise ValueError("Document company_id cannot be changed")
 
+                previous_state = json.loads(json.dumps(row.workflow_state)) if row.workflow_state else None
                 stored_content = externalize(state, content, row.company_id,
                     original=expected_revision is None or bool(state.get("source_storage")) or migrate_source,
                     rebind=migrate_source)
@@ -186,6 +187,9 @@ class DocumentRepository:
 
                 session.flush()
                 revision = row.revision
+                from app.services.analytics.tracker import track_transition
+                track_transition(session, row.company_id, document_id, revision, previous_state,
+                    dict(state, file_size=len(content) if content is not None else None))
                 session.commit()
             except (IntegrityError, StaleDataError) as exc:
                 session.rollback()

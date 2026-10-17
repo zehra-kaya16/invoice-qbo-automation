@@ -72,7 +72,8 @@ async def get_current_user(request: Request, csrf_token: str | None = Header(Non
     return principal
 
 
-async def company_access(user: Principal = Depends(get_current_user)):
+async def company_access(request: Request, user: Principal = Depends(get_current_user)):
+    request.state.analytics_principal = user
     token = current_principal.set(user)
     try:
         yield user

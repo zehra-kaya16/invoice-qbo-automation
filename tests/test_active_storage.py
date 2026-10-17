@@ -87,7 +87,12 @@ def test_local_storage_rejects_unsafe_keys(tmp_path,key):
 
 def test_local_symlink_cannot_escape(tmp_path):
     local=LocalStorage(str(tmp_path/'objects'));outside=tmp_path/'outside';outside.mkdir()
-    (tmp_path/'objects'/'link').symlink_to(outside,target_is_directory=True)
+    try:
+        (tmp_path/'objects'/'link').symlink_to(outside,target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, 'winerror', None) == 1314:
+            pytest.skip('Windows does not grant symbolic-link creation permission')
+        raise
     with pytest.raises(ValueError):local.upload(io.BytesIO(b'x'),'link/file','text/plain')
     assert not (outside/'file').exists()
 

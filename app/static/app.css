@@ -57,3 +57,11 @@
 #users-list .review-actions { margin-top: 10px; }
 .connection { flex-wrap: wrap; }
 @media (max-width: 640px) { .auth-card { margin: 20px 16px; padding: 22px; } .header-inner { flex-wrap: wrap; gap: 16px; } }
+
+.analytics-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0;}
+.analytics-stat {display:grid;gap:8px;border:1px solid var(--border);border-radius:10px;padding:16px;}
+.analytics-stat strong {font-size:1.8rem;}
+#analytics-panel table {width:100%;border-collapse:collapse;margin-bottom:16px;}
+#analytics-panel th,#analytics-panel td {padding:9px;text-align:left;border-bottom:1px solid var(--border);overflow-wrap:anywhere;}
+#analytics-panel .table-scroll {overflow-x:auto;max-width:100%;}
+#analytics-panel {min-width:0;}

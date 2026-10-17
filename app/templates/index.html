@@ -65,6 +65,16 @@
         <p class="muted">Fatura, fiş ve ekstrelerini yükle; kayıtlarını ve kaynak dosyalarını görüntüle.</p></div>
       <button id="choose-files" class="button primary" type="button">+ Belge yükle</button>
     </div>
+    <details id="analytics-panel" class="account-panel">
+      <summary>Şirket istatistikleri</summary>
+      <p class="muted small">Belge durumları tüm kayıtlarını kapsar. Olaylar ve süreler, 112. adımdan sonra kaydedilen seçili döneme aittir. Yenile ile güncelle.</p>
+      <div class="review-actions"><label class="review-field">Ölçüm dönemi<select id="analytics-hours"><option value="1">Son 1 saat</option><option value="24" selected>Son 24 saat</option><option value="168">Son 7 gün</option></select></label>
+        <button id="analytics-refresh" class="button secondary" type="button">İstatistikleri yenile</button></div>
+      <p id="analytics-message" class="muted small" role="status" aria-live="polite"></p>
+      <p id="analytics-error" class="error-message" role="alert" hidden></p>
+      <div id="analytics-inventory" class="analytics-grid"></div>
+      <div id="analytics-breakdown"></div><div id="analytics-events"></div><div id="analytics-timers"></div>
+    </details>
     <section class="upload-card" aria-labelledby="upload-heading">
       <div class="section-heading"><h2 id="upload-heading">Yeni belge ekle</h2><span class="muted small">PDF · PNG · JPG · HEIC</span></div>
       <button id="choose-zip" class="button secondary" type="button">ZIP arşivi yükle</button>
