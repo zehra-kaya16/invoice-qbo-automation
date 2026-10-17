@@ -25,6 +25,7 @@ from quickbooks.objects.detailline import (
     AccountBasedExpenseLineDetail,
 )
 from quickbooks.objects.purchase import Purchase
+from quickbooks.objects.creditcardpayment_entity import CreditCardPayment as CreditCardPaymentEntity
 from quickbooks.objects.vendor import Vendor
 
 
@@ -373,31 +374,39 @@ class QBOClient:
 
         return None
 
+    
     def get_accounts(self, account_type: str = None) -> List[dict]:
         """
         Get chart of accounts.
 
         Args:
-            account_type: Filter by type (Expense, Bank, etc.)
+            account_type: Filter by type (Expense, Bank, CreditCard, etc.)
         """
         accounts = Account.all(qb=self.qb_client)
 
         result = []
 
         for a in accounts:
-            if account_type and a.AccountType != account_type:
+            normalized_type = (
+                "CreditCard"
+                if a.AccountType in ("Credit Card", "CreditCard")
+                else a.AccountType
+            )
+
+            if account_type and normalized_type != account_type:
                 continue
 
             result.append({
                 "id": a.Id,
                 "name": a.Name,
-                "type": a.AccountType,
+                "type": normalized_type,
                 "sub_type": a.AccountSubType,
                 "fully_qualified_name": a.FullyQualifiedName,
                 "currency": _currency_ref(getattr(a, "CurrencyRef", None)),
             })
 
         return result
+
 
     def get_purchase_transactions(
         self,
@@ -410,6 +419,8 @@ class QBOClient:
         for bank-statement matching.
         """
 
+        if account_type not in {"Bank", "CreditCard"}:
+            raise ValueError("Matching requires a Bank or CreditCard account")
         if not self.qb_client:
             raise ValueError(
                 "QuickBooks client is not initialized."
@@ -547,6 +558,7 @@ class QBOClient:
         start_date,
         end_date,
         bank_account_id: str,
+        account_type: str = "Bank",
     ) -> List[dict]:
         """
         Read QBO transactions affecting one selected
@@ -677,6 +689,15 @@ class QBOClient:
                 "vendor": vendor_name,
                 "description": description,
             })
+
+        if account_type == "CreditCard":
+            for payment in CreditCardPaymentEntity.where(where_clause, order_by="TxnDate", qb=self.qb_client):
+                if _qbo_ref_value(getattr(payment, "CreditCardAccountRef", None)) != selected_account_id:
+                    continue
+                result.append({"id": str(payment.Id), "type": "credit_card_payment",
+                    "date": str(payment.TxnDate), "amount": str(Decimal(str(payment.Amount))),
+                    "check_number": None, "vendor": None,
+                    "description": getattr(payment, "Memo", None) or "Credit card payment"})
 
         # --------------------------------------
         # 2. DEPOSIT
@@ -828,20 +849,10 @@ class QBOClient:
         )
 
         for payment in bill_payments:
-            check_payment = getattr(
-                payment,
-                "CheckPayment",
-                None,
-            )
-
+            check_payment = getattr(payment, "CreditCardPayment" if account_type == "CreditCard" else "CheckPayment", None)
             if check_payment is None:
                 continue
-
-            bank_ref = getattr(
-                check_payment,
-                "BankAccountRef",
-                None,
-            )
+            bank_ref = getattr(check_payment, "CCAccountRef" if account_type == "CreditCard" else "BankAccountRef", None)
 
             payment_account_id = (
                 _qbo_ref_value(
@@ -1244,7 +1255,7 @@ class QBOClient:
                 "vendor_id": _currency_ref(getattr(value, "VendorRef", None) if transaction_type == "bill" else getattr(value, "EntityRef", None)),
                 "bank_account_id": _currency_ref(getattr(value, "AccountRef", None)),
                 "expense_accounts": lines, "marker": getattr(value, "PrivateNote", None),
-                "doc_number": getattr(value, "DocNumber", None)}
+                "doc_number": getattr(value, "DocNumber", None) or getattr(value, "PaymentRefNum", None)}
 
     def find_recovery_transactions(self, create_as: str, date: str, marker: str) -> list[dict]:
         Date.fromisoformat(date)

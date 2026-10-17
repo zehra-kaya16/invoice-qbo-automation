@@ -1,4 +1,4 @@
-from app.services.persistence.check_sources import check_image_bytes, check_image_file, check_image_filename, CheckSourceError
+from app.services.persistence.check_sources import check_image_bytes, check_image_file, check_image_filename, check_image_content_type, CheckSourceError
 """Recover verified QBO results without reopening transaction creation."""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from typing import Literal, Optional
 
 from app.api import documents as api
+from app.schemas.documents import RECONCILIATION_TYPES
 from app.schemas.documents import DocumentType, ProcessingStatus
 
 router = APIRouter()
@@ -29,7 +30,7 @@ class RecoveryRequest(BaseModel):
 
 
 def realm_for(document):
-    return document.get('qbo_match_realm_id') if document.get('document_type') == DocumentType.BANK_STATEMENT else (document.get('qbo_push_context') or {}).get('realm_id')
+    return document.get('qbo_match_realm_id') if document.get('document_type') in RECONCILIATION_TYPES else (document.get('qbo_push_context') or {}).get('realm_id')
 
 
 def _active(status, started):
@@ -55,7 +56,7 @@ def _items(document):
             items.append({'key':'source', 'label':'Kaynak dosya eki', 'status':status or 'not_started',
                           'transaction_id':document['qbo_transaction_id'], 'attachment_id':document.get('qbo_attachment_id'),
                           'error':document.get('qbo_attachment_error'), 'can_retry':status in {None,'failed_before_write'} and not document.get('qbo_attachment_id')})
-    elif document.get('document_type') == DocumentType.BANK_STATEMENT:
+    elif document.get('document_type') in RECONCILIATION_TYPES:
         categories = document.get('category_suggestions') or []
         checks = document.get('check_match_results') or []
         attempted = any(i.get('qbo_category_push_status') in {'pushing','pushed','uncertain'} for i in categories) or any(i.get('attachment_id') or i.get('attachment_error') or i.get('attachment_push_status') for i in checks)
@@ -154,6 +155,11 @@ def _bank_identity(document, entry, transaction):
     if type(index) is not int or index < 0 or index >= len(values):
         raise HTTPException(409, 'Original bank transaction was not found')
     original = values[index]
+    if document.get('document_type') == DocumentType.CHECK:
+        match = next((item for item in document.get('qbo_match_results', []) if item.get('transaction_index') == index), {})
+        original = ((match.get('reviewed_match') or {}).get('transaction') or original)
+        if str(transaction.get('doc_number') or '') != str((document.get('extracted_data') or {}).get('check_number') or ''):
+            raise HTTPException(409, 'QBO check number differs from the reviewed check')
     if transaction.get('date') != original.get('date') or abs(_money(transaction.get('amount'))) != abs(_money(original.get('amount'))):
         raise HTTPException(409, 'The QBO transaction differs from the original bank transaction')
 
@@ -186,7 +192,7 @@ def _mark_attachment(document, entry, key, attachment_id):
 
 
 def _finish_bank(document):
-    if document.get('document_type') != DocumentType.BANK_STATEMENT:
+    if document.get('document_type') not in RECONCILIATION_TYPES:
         return
     if document.get('category_suggestions') is None or document.get('check_match_results') is None:
         return
@@ -316,7 +322,7 @@ def recover(document_id: str, request: RecoveryRequest):
                         path=temp_path
                         document.update(qbo_attachment_marker=marker,qbo_attachment_push_status='uploading',qbo_attachment_started_at=datetime.now(timezone.utc).isoformat())
                     else:
-                        content_type='image/png'
+                        content_type=check_image_content_type(document, entry.get('image_path'))
                         try:
                             content=check_image_bytes(document, entry.get('image_path'))
                         except CheckSourceError as exc:

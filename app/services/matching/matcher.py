@@ -239,6 +239,7 @@ class BankFeedMatcher:
         self,
         check_image,
         transactions,
+        allow_incoming: bool = False,
     ) -> dict:
         """
         Match one extracted check image to the
@@ -270,7 +271,7 @@ class BankFeedMatcher:
 
             # A check must correspond to money
             # leaving the bank account.
-            if transaction_amount >= 0:
+            if transaction_amount == 0 or (transaction_amount > 0 and not allow_incoming):
                 continue
 
             # ----------------------------------

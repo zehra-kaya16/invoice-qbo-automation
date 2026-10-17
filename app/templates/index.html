@@ -193,9 +193,10 @@
       <section id="bank-panel" class="qbo-panel" aria-labelledby="bank-heading" hidden>
         <div class="section-heading"><h3 id="bank-heading">Ekstre eşleşme ve aktarım</h3><button id="bank-refresh" class="button secondary" type="button">Ekstre durumunu yenile</button></div>
         <p class="muted small">Mevcut QBO işlemlerini incele. Onaylanan Purchase kategorileri güncellenir; varsa çek görselleri mevcut işlemlere eklenir.</p>
+        <details id="reconciliation-editor" class="validation-panel" hidden></details>
         <p id="bank-message" role="status" aria-live="polite"></p><p id="bank-error" class="error-message" role="alert" hidden></p>
         <div class="review-actions"><button id="bank-load" class="button secondary" type="button">QBO hesaplarını yükle</button>
-          <label class="review-field"><span>Ekstrenin QBO banka hesabı</span><select id="bank-account"><option value="">Banka hesabı seç</option></select></label>
+          <label class="review-field"><span id="bank-account-label">QBO banka hesabı</span><select id="bank-account"><option value="">Banka hesabı seç</option></select></label>
           <button id="bank-match" class="button primary" type="button" disabled>QBO ile eşleştir</button></div>
         <p id="bank-binding" class="muted small"></p>
         <h4>1. İşlem eşleşmelerini incele</h4><div id="bank-matches" class="bank-records"></div>

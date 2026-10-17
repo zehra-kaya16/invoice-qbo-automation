@@ -284,6 +284,9 @@ class DocumentExtractor:
         image_data: bytes,
     ) -> CheckData:
         prompt = """
+        Extract ONE physical check from all supplied front/back views.
+        If the images contain more than one distinct check, return {"multiple_checks": true}.
+        Return check_number as a string preserving leading zeros.
         Extract the information visible in this check image.
 
         Return only a valid JSON object with these fields:
@@ -313,15 +316,13 @@ class DocumentExtractor:
         Do not add explanations outside the JSON.
         """
 
-        response = self._vision_request(
-            image_data,
-            prompt,
-        )
-
-        data = self._parse_json(
-            response
-        )
-
+        response = (self._vision_request_pages(image_data, prompt) if isinstance(image_data, list)
+                    else self._vision_request(image_data, prompt))
+        data = self._parse_json(response)
+        if data.get("multiple_checks"):
+            raise ValueError("Upload one physical check per document")
+        if data.get("check_number") is not None:
+            data["check_number"] = str(data["check_number"]).strip()
         return CheckData(
             check_number=data.get(
                 "check_number"

@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.exc import StaleDataError
 
+from app.schemas.documents import RECONCILIATION_TYPES
 from app.core import database
 from app.core.auth import current_principal
 from app.models.database import BatchPushRun, Document, UploadBatch, utc_now
@@ -80,10 +81,9 @@ def load_document(id, expected_revision, batch_id=None):
 
 def preview(id, body, batch_id):
     from app.api import documents, qbo
-    from app.schemas.documents import DocumentType
     from app.services.persistence.check_sources import check_image_bytes, CheckSourceError
     doc = load_document(id, body["expected_revision"], batch_id)
-    if doc.get("document_type") == DocumentType.BANK_STATEMENT:
+    if doc.get("document_type") in RECONCILIATION_TYPES:
         if body["create_as"] != "bank_statement":
             raise HTTPException(400, "A bank statement requires its reviewed bank workflow plan")
         snapshot = documents.get_bank_workflow(id)
@@ -208,7 +208,7 @@ def document_result(id):
         return {}, False
     fields = {"transaction_id": doc.get("qbo_transaction_id"),
               "transaction_type": doc.get("qbo_transaction_type"), "doc_number": doc.get("qbo_doc_number"), "attachment_id": doc.get("qbo_attachment_id")}
-    if doc.get("document_type") == "bank_statement":
+    if doc.get("document_type") in RECONCILIATION_TYPES:
         fields["bank_results"] = {
             "categories": [{k: c.get(k) for k in ("qbo_transaction_id", "qbo_category_push_status", "qbo_category_account_id")}
                            for c in doc.get("category_suggestions") or []],

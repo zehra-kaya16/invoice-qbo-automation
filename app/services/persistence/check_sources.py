@@ -52,6 +52,10 @@ def check_image_bytes(document, image_path):
     return content
 
 
+def check_image_content_type(document, image_path):
+    return ((document.get('check_image_sources') or {}).get(image_path) or {}).get('content_type', 'image/png')
+
+
 def check_image_filename(document, image_path):
     source = (document.get('check_image_sources') or {}).get(image_path) or {}
     return source.get('filename') or PureWindowsPath(image_path).name
@@ -62,7 +66,7 @@ def check_image_file(document, image_path):
     content = check_image_bytes(document, image_path)
     path = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(check_image_filename(document, image_path)).suffix or '.bin') as file:
             file.write(content)
             path = file.name
         yield path

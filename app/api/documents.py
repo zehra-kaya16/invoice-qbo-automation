@@ -1,6 +1,6 @@
 from urllib.parse import quote
 from starlette.concurrency import run_in_threadpool
-from app.services.persistence.check_sources import check_image_bytes, check_image_file, check_image_filename, CheckSourceError
+from app.services.persistence.check_sources import check_image_bytes, check_image_file, check_image_filename, check_image_content_type, CheckSourceError
 from app.core.auth import company_key as authorized_company_key, current_principal
 from datetime import datetime, timezone
 import uuid
@@ -23,6 +23,7 @@ from app.services.persistence.repository import (
     DocumentRepository,
 )
 
+from app.schemas.documents import RECONCILIATION_TYPES
 from app.schemas.documents import (
     BankMatchReviewRequest,
     BankStatementData,
@@ -126,7 +127,7 @@ def _ensure_bank_realm(document: dict, client, expected_realm_id=None) -> None:
 def get_bank_workflow(document_id: str):
     """Read a detached bank review snapshot; never call QBO or save it."""
     document = _load_document(document_id)
-    if document.get("document_type") != DocumentType.BANK_STATEMENT:
+    if document.get("document_type") not in RECONCILIATION_TYPES:
         raise HTTPException(400, "Bank workflow requires a bank statement")
     locked = False
     try:
@@ -196,6 +197,42 @@ class PushToQBORequest(BaseModel):
 class MatchToQBORequest(BaseModel):
     expected_realm_id: Optional[str] = None
     bank_account_id: str
+
+
+class ReconciliationEditRequest(BaseModel):
+    expected_revision: int
+    check_data: Optional[CheckData] = None
+    statement_data: Optional[BankStatementData] = None
+
+
+@router.patch("/{document_id}/reconciliation-data")
+def edit_reconciliation_data(document_id: str, request: ReconciliationEditRequest):
+    document = _load_document(document_id)
+    if document.get("document_type") not in {DocumentType.CHECK, DocumentType.CREDIT_CARD_STATEMENT}:
+        raise HTTPException(400, "This editor requires a check or credit-card statement")
+    if document.get("_revision") != request.expected_revision:
+        raise HTTPException(409, "Document changed; reload before editing")
+    _ensure_workflow_editable(document)
+    if document.get("status") not in {ProcessingStatus.EXTRACTED, ProcessingStatus.MATCHED, ProcessingStatus.FAILED}:
+        raise HTTPException(409, "Wait for extraction before editing")
+    from app.services.extraction.reconciliation import prepare_standalone_check, validate_reconciliation
+    if document.get("document_type") == DocumentType.CHECK:
+        if request.check_data is None or request.statement_data is not None:
+            raise HTTPException(422, "Supply check fields")
+        try:
+            document["extracted_data"] = prepare_standalone_check(document, request.check_data)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+    else:
+        if request.statement_data is None or request.check_data is not None:
+            raise HTTPException(422, "Supply credit-card statement fields")
+        document["extracted_data"] = request.statement_data.model_dump()
+        validate_reconciliation(document)
+    for key in ("qbo_match_results", "check_match_results", "category_suggestions", "qbo_match_realm_id", "qbo_match_bank_account"):
+        document.pop(key, None)
+    document.update(status=ProcessingStatus.EXTRACTED, error=None, approved=False)
+    _save_document(document)
+    return _build_extraction_response(document)
 
 def _qbo_attachment_entity_type(
     transaction_type: str,
@@ -351,14 +388,14 @@ def get_document_preview(document_id: str):
 def get_check_source(document_id: str, check_index: int):
     document = _load_document(document_id)
     checks = (document.get("extracted_data") or {}).get("check_images", [])
-    if document.get("document_type") != DocumentType.BANK_STATEMENT or check_index < 0 or check_index >= len(checks):
+    if document.get("document_type") not in RECONCILIATION_TYPES or check_index < 0 or check_index >= len(checks):
         raise HTTPException(404, "Check source was not found")
     try:
         content = check_image_bytes(document, checks[check_index].get("image_path"))
     except CheckSourceError as exc:
         raise HTTPException(409, str(exc)) from None
     filename=check_image_filename(document, checks[check_index].get("image_path"))
-    return Response(content=content, media_type="image/png", headers={"Cache-Control":"no-store", "Content-Disposition":"inline; filename*=UTF-8\'\'" + quote(filename, safe="")})
+    return Response(content=content, media_type=check_image_content_type(document, checks[check_index].get("image_path")), headers={"Cache-Control":"no-store", "Content-Disposition":"inline; filename*=UTF-8\'\'" + quote(filename, safe="")})
 
 
 @router.get("/{document_id}", response_model=DocumentStatus)
@@ -512,19 +549,18 @@ def _process_document_sync(document_id: str, expected_revision: int | None = Non
                 extracted.model_dump()
             )
 
+        elif document_type == DocumentType.CREDIT_CARD_STATEMENT:
+            from app.services.extraction.reconciliation import extract_credit_card_statement
+            document["extracted_data"] = extract_credit_card_statement(extractor, page_images).model_dump()
         elif document_type == DocumentType.CHECK:
-            extracted = extractor.extract_check(
-                page_images[0]
-            )
-
-            document["extracted_data"] = (
-                extracted.model_dump()
-            )
+            from app.services.extraction.reconciliation import prepare_standalone_check
+            extracted = extractor.extract_check(page_images[0] if len(page_images) == 1 else page_images)
+            document["extracted_data"] = extracted.model_dump()
+            if extracted.direction is not None:
+                document["extracted_data"] = prepare_standalone_check(document, extracted)
 
         else:
-            document["extracted_data"] = {
-                "raw_type": str(document_type)
-            }
+            raise ValueError("Unsupported document type; extraction was not completed")
 
         document["status"] = ProcessingStatus.EXTRACTED
 
@@ -564,21 +600,13 @@ def _build_extraction_response(
 
     elif (
         document.get("document_type")
-        == DocumentType.BANK_STATEMENT
+        in RECONCILIATION_TYPES
     ):
-        response.bank_statement_data = (
-            BankStatementData(
-                **extracted
-            )
-        )
-
-    elif (
-        document.get("document_type")
-        == DocumentType.CHECK
-    ):
-        response.check_data = CheckData(
-            **extracted
-        )
+        response.bank_statement_data = BankStatementData(**extracted)
+        if document.get("document_type") == DocumentType.CHECK:
+            response.check_data = CheckData(**extracted)
+        elif document.get("document_type") == DocumentType.CREDIT_CARD_STATEMENT:
+            response.credit_card_statement_data = response.bank_statement_data
 
     return response
 
@@ -595,7 +623,7 @@ async def get_extracted_data(document_id: str):
         ProcessingStatus.EXTRACTED,
         ProcessingStatus.MATCHED,
         ProcessingStatus.PUSHED,
-    ]:
+    ] and not (document.get("status") == ProcessingStatus.FAILED and document.get("document_type") in {DocumentType.CHECK, DocumentType.CREDIT_CARD_STATEMENT}):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -882,7 +910,7 @@ def _push_bank_statement_checks(
                 result = client.upload_attachment(
                     file_path=source_path,
                     file_name=check_image_filename(document, image_path),
-                    content_type="image/png",
+                    content_type=check_image_content_type(document, image_path),
                     entity_type=entity_type,
                     entity_id=str(transaction_id),
                     recovery_marker=item["attachment_marker"],
@@ -1694,7 +1722,7 @@ async def push_to_qbo(
     if request.expected_revision is not None and request.expected_revision != document.get("_revision"):
         raise HTTPException(409, "Document changed; reload and preview before pushing")
 
-    if document_type == DocumentType.BANK_STATEMENT:
+    if document_type in RECONCILIATION_TYPES:
         if document.get("status") not in {ProcessingStatus.EXTRACTED, ProcessingStatus.MATCHED, ProcessingStatus.PUSHED}:
             raise HTTPException(409, "Extract the bank statement successfully before pushing")
         has_check_images = bool(
@@ -2172,7 +2200,7 @@ async def match_document_to_qbo(
 
     if (
         document.get("document_type")
-        != DocumentType.BANK_STATEMENT
+        not in RECONCILIATION_TYPES
     ):
         raise HTTPException(
             status_code=400,
@@ -2196,6 +2224,9 @@ async def match_document_to_qbo(
                 "extracted data"
             ),
         )
+
+    from app.services.extraction.reconciliation import validate_reconciliation
+    validate_reconciliation(document)
 
     try:
         statement = BankStatementData(
@@ -2235,7 +2266,7 @@ async def match_document_to_qbo(
     if request.expected_realm_id is not None and request.expected_realm_id != getattr(client, "realm_id", None):
         raise HTTPException(409, "QBO company changed; reload bank accounts")
     accounts = client.get_accounts(
-        account_type="Bank"
+        account_type="CreditCard" if document.get("document_type") == DocumentType.CREDIT_CARD_STATEMENT else "Bank"
     )
 
     selected_bank_account = next(
@@ -2248,12 +2279,13 @@ async def match_document_to_qbo(
         None,
     )
 
-    if selected_bank_account is None:
+    if selected_bank_account is None or (document.get("document_type") == DocumentType.CREDIT_CARD_STATEMENT
+            and selected_bank_account.get("type") != "CreditCard"):
         raise HTTPException(
             status_code=400,
             detail=(
                 "bank_account_id must reference "
-                "an existing QBO Bank account"
+                "an existing QBO account of the document's required type"
             ),
         )
 
@@ -2266,9 +2298,8 @@ async def match_document_to_qbo(
                 end_date=(
                     statement.statement_period_end
                 ),
-                bank_account_id=(
-                    request.bank_account_id
-                ),
+                bank_account_id=request.bank_account_id,
+                **({"account_type": "CreditCard"} if document.get("document_type") == DocumentType.CREDIT_CARD_STATEMENT else {}),
             )
         )
     except Exception as exc:
@@ -2279,6 +2310,12 @@ async def match_document_to_qbo(
                 f"transactions: {exc}"
             ),
         ) from exc
+
+    if document.get("document_type") == DocumentType.CHECK:
+        number = str(extracted_data.get("check_number") or "").strip()
+        qbo_transactions = [t for t in qbo_transactions
+            if t.get("type") in ({"deposit", "payment"} if extracted_data.get("direction") == "incoming" else {"purchase", "bill_payment"})
+            and str(t.get("check_number") or "").strip() == number]
 
     matcher = BankFeedMatcher()
 
@@ -2316,6 +2353,7 @@ async def match_document_to_qbo(
         check_match = (
             matcher.match_check_image_to_statement(
                 check_image=check_image,
+                **({"allow_incoming": True} if document.get("document_type") == DocumentType.CHECK and extracted_data.get("direction") == "incoming" else {}),
                 transactions=(
                     statement.transactions
                 ),
@@ -2460,9 +2498,7 @@ async def match_document_to_qbo(
             "vendor_status": "not_checked",
         })
 
-    document["extracted_data"] = (
-        statement.model_dump()
-    )
+    document["extracted_data"] = {**extracted_data, **statement.model_dump()}
 
     document[
         "check_match_results"
@@ -2552,7 +2588,7 @@ async def resolve_bank_statement_vendors(
 
     if (
         document.get("document_type")
-        != DocumentType.BANK_STATEMENT
+        not in RECONCILIATION_TYPES
     ):
         raise HTTPException(
             status_code=400,
@@ -2664,7 +2700,7 @@ async def suggest_bank_statement_categories(
 
     if (
         document.get("document_type")
-        != DocumentType.BANK_STATEMENT
+        not in RECONCILIATION_TYPES
     ):
         raise HTTPException(
             status_code=400,
@@ -2901,9 +2937,7 @@ async def suggest_bank_statement_categories(
             }
         )
 
-    document["extracted_data"] = (
-        statement.model_dump()
-    )
+    document["extracted_data"] = {**extracted_data, **statement.model_dump()}
 
     document[
         "category_suggestions"
@@ -2939,7 +2973,7 @@ async def review_bank_statement_category(
 
     if (
         document.get("document_type")
-        != DocumentType.BANK_STATEMENT
+        not in RECONCILIATION_TYPES
     ):
         raise HTTPException(
             status_code=400,
@@ -3169,9 +3203,7 @@ async def review_bank_statement_category(
             None
         )
 
-    document["extracted_data"] = (
-        statement.model_dump()
-    )
+    document["extracted_data"] = {**extracted_data, **statement.model_dump()}
 
     document[
         "category_suggestions"
@@ -3206,7 +3238,7 @@ async def get_bank_statement_category_review(
 
     if (
         document.get("document_type")
-        != DocumentType.BANK_STATEMENT
+        not in RECONCILIATION_TYPES
     ):
         raise HTTPException(
             status_code=400,
@@ -3286,7 +3318,7 @@ async def review_bank_statement_match(
 
     if (
         document.get("document_type")
-        != DocumentType.BANK_STATEMENT
+        not in RECONCILIATION_TYPES
     ):
         raise HTTPException(
             status_code=400,

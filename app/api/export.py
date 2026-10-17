@@ -46,7 +46,7 @@ def _project(data, model, nested=None):
 def _extracted(data, kind):
     if kind in {"receipt", "invoice", "bill"}:
         return _project(data, ReceiptData, {"line_items": (LineItem, True, None)})
-    if kind == "bank_statement":
+    if kind in {"bank_statement", "credit_card_statement"}:
         return _project(data, BankStatementData, {
             "transactions": (BankTransaction, True, {"check_image": (CheckData, False, None)}),
             "check_images": (CheckImage, True, None),

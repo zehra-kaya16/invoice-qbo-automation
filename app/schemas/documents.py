@@ -15,6 +15,9 @@ class DocumentType(str, Enum):
     CREDIT_CARD_STATEMENT = "credit_card_statement"
     UNKNOWN = "unknown"
 
+RECONCILIATION_TYPES = frozenset({DocumentType.BANK_STATEMENT, DocumentType.CHECK, DocumentType.CREDIT_CARD_STATEMENT})
+
+
 class ProcessingStatus(str, Enum):
     UPLOADED = "uploaded"
     CLASSIFYING = "classifying"
@@ -107,6 +110,7 @@ class InvoiceValidationResult(BaseModel):
     expected_total: Optional[Decimal] = None
 
 class CheckData(BaseModel):
+    direction: Optional[Literal["outgoing", "incoming"]] = None
     check_number: Optional[str] = None
     payee: Optional[str] = None
     amount: Optional[Decimal] = None
@@ -215,6 +219,7 @@ class ExtractionResponse(BaseModel):
     receipt_data: Optional[ReceiptData] = None
     bank_statement_data: Optional[BankStatementData] = None
     check_data: Optional[CheckData] = None
+    credit_card_statement_data: Optional[BankStatementData] = None
     validation: Optional[InvoiceValidationResult] = None
     approved: bool = False
 
