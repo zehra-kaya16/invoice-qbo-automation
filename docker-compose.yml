@@ -8,7 +8,7 @@ services:
       - APP_ENV=development
       - DATABASE_URL=postgresql://receiptai:receiptai@db:5432/receiptai
       - REDIS_URL=redis://redis:6379/0
-      - STORAGE_TYPE=local
+      - STORAGE_TYPE=${STORAGE_TYPE:-local}
       - LOCAL_STORAGE_PATH=/app/uploads
 
     env_file:
@@ -68,7 +68,7 @@ services:
       - APP_ENV=development
       - DATABASE_URL=postgresql://receiptai:receiptai@db:5432/receiptai
       - REDIS_URL=redis://redis:6379/0
-      - STORAGE_TYPE=local
+      - STORAGE_TYPE=${STORAGE_TYPE:-local}
       - LOCAL_STORAGE_PATH=/app/uploads
 
     env_file:

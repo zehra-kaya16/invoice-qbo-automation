@@ -59,9 +59,9 @@ router = APIRouter()
 document_repository = DocumentRepository()
 
 
-def _load_document(document_id: str) -> dict:
+def _load_document(document_id: str, *, load_sources: bool = True) -> dict:
     try:
-        document = document_repository.get(document_id)
+        document = document_repository.get(document_id) if load_sources else document_repository.get(document_id, load_sources=False)
     except SQLAlchemyError as exc:
         raise HTTPException(503, "Document database is unavailable") from exc
     if document is None:
@@ -126,7 +126,7 @@ def _ensure_bank_realm(document: dict, client, expected_realm_id=None) -> None:
 @router.get("/{document_id}/bank-workflow")
 def get_bank_workflow(document_id: str):
     """Read a detached bank review snapshot; never call QBO or save it."""
-    document = _load_document(document_id)
+    document = _load_document(document_id, load_sources=False)
     if document.get("document_type") not in RECONCILIATION_TYPES:
         raise HTTPException(400, "Bank workflow requires a bank statement")
     locked = False
@@ -301,7 +301,7 @@ async def upload_document(
             "qbo_transaction_type": None,
             "qbo_push_error": None,
         }
-        _save_document(document)
+        await run_in_threadpool(_save_document, document)
         if auto_process and background_tasks:
             background_tasks.add_task(
                 _process_document_owned,
@@ -351,7 +351,7 @@ async def list_documents(
 
 @router.get("/{document_id}/source")
 async def get_document_source(document_id: str):
-    document = _load_document(document_id)
+    document = await run_in_threadpool(_load_document, document_id)
     content = document.get("content")
     if not isinstance(content, bytes) or not content:
         raise HTTPException(404, "Document source is unavailable")
@@ -400,7 +400,7 @@ def get_check_source(document_id: str, check_index: int):
 
 @router.get("/{document_id}", response_model=DocumentStatus)
 async def get_document(document_id: str):
-    document = _load_document(document_id)
+    document = _load_document(document_id, load_sources=False)
 
     return DocumentStatus(
         qbo_doc_number=document.get("qbo_doc_number"),
@@ -617,7 +617,7 @@ def _build_extraction_response(
 )
 async def get_extracted_data(document_id: str):
 
-    document = _load_document(document_id)
+    document = _load_document(document_id, load_sources=False)
 
     if document["status"] not in [
         ProcessingStatus.EXTRACTED,

@@ -6,6 +6,9 @@ Supports local filesystem, S3, and Cloudflare R2.
 
 import os
 import uuid
+import tempfile
+import re
+from botocore.config import Config
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,7 +31,7 @@ class StorageBackend(ABC):
         """Upload file and return URL/path."""
 
     @abstractmethod
-    def download(self, key: str) -> bytes:
+    def download(self, key: str, max_bytes: int | None = None) -> bytes:
         """Download file content."""
 
     @abstractmethod
@@ -54,32 +57,43 @@ class LocalStorage(StorageBackend):
             exist_ok=True,
         )
 
-    def upload(
-        self,
-        file: BinaryIO,
-        key: str,
-        content_type: str,
-    ) -> str:
-        file_path = self.base_path / key
+    def _path(self, key):
+        if not isinstance(key, str) or not key or "\\" in key or ":" in key:
+            raise ValueError("Invalid storage key")
+        relative = Path(key)
+        if relative.is_absolute() or any(part in {".", ".."} for part in key.split("/")):
+            raise ValueError("Invalid storage key")
+        root = self.base_path.resolve()
+        result = (root / relative).resolve()
+        if not result.is_relative_to(root):
+            raise ValueError("Storage key escapes its root")
+        return result
 
-        file_path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+    def upload(self, file: BinaryIO, key: str, content_type: str) -> str:
+        file_path = self._path(key)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=file_path.parent, delete=False) as temp:
+                temp_path = Path(temp.name)
+                while chunk := file.read(1024 * 1024):
+                    temp.write(chunk)
+                temp.flush()
+                os.fsync(temp.fileno())
+            os.replace(temp_path, file_path)
+            return str(file_path)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
 
-        with open(file_path, "wb") as f:
-            f.write(file.read())
-
-        return str(file_path)
-
-    def download(self, key: str) -> bytes:
-        file_path = self.base_path / key
+    def download(self, key: str, max_bytes: int | None = None) -> bytes:
+        file_path = self._path(key)
 
         with open(file_path, "rb") as f:
-            return f.read()
+            return f.read() if max_bytes is None else f.read(max_bytes + 1)
 
     def delete(self, key: str) -> bool:
-        file_path = self.base_path / key
+        file_path = self._path(key)
 
         if file_path.exists():
             file_path.unlink()
@@ -92,7 +106,8 @@ class LocalStorage(StorageBackend):
         key: str,
         expires_in: int = 3600,
     ) -> str:
-        return f"/uploads/{key}"
+        self._path(key)
+        raise ValueError("Private objects must be opened through the authenticated document source API")
 
 
 class S3Storage(StorageBackend):
@@ -117,13 +132,14 @@ class S3Storage(StorageBackend):
             region_name=region,
             aws_access_key_id=(
                 access_key
-                or os.getenv("S3_ACCESS_KEY")
+                or os.getenv("S3_ACCESS_KEY") or None
             ),
             aws_secret_access_key=(
                 secret_key
-                or os.getenv("S3_SECRET_KEY")
+                or os.getenv("S3_SECRET_KEY") or None
             ),
             endpoint_url=endpoint_url,
+            config=Config(connect_timeout=5, read_timeout=30, retries={"max_attempts": 2}),
         )
 
     def upload(
@@ -143,13 +159,17 @@ class S3Storage(StorageBackend):
 
         return f"s3://{self.bucket}/{key}"
 
-    def download(self, key: str) -> bytes:
+    def download(self, key: str, max_bytes: int | None = None) -> bytes:
         response = self.client.get_object(
             Bucket=self.bucket,
             Key=key,
         )
 
-        return response["Body"].read()
+        body = response["Body"]
+        try:
+            return body.read() if max_bytes is None else body.read(max_bytes + 1)
+        finally:
+            body.close()
 
     def delete(self, key: str) -> bool:
         try:
@@ -234,41 +254,9 @@ class DocumentStorage:
     def _get_default_backend(
         self,
     ) -> StorageBackend:
-        storage_type = os.getenv(
-            "STORAGE_TYPE",
-            "local",
-        )
-
-        if storage_type == "local":
-            return LocalStorage(
-                os.getenv(
-                    "LOCAL_STORAGE_PATH",
-                    "./uploads",
-                )
-            )
-
-        elif storage_type == "s3":
-            return S3Storage(
-                bucket=os.getenv("S3_BUCKET"),
-                region=os.getenv(
-                    "S3_REGION",
-                    "us-east-1",
-                ),
-            )
-
-        elif storage_type == "r2":
-            return R2Storage(
-                bucket=os.getenv("R2_BUCKET"),
-                account_id=os.getenv(
-                    "R2_ACCOUNT_ID"
-                ),
-            )
-
-        else:
-            raise ValueError(
-                f"Unknown storage type: "
-                f"{storage_type}"
-            )
+        from app.services.storage.objects import backend_for
+        from app.core.config import settings
+        return backend_for(settings.storage_type)[0]
 
     def upload_document(
         self,
@@ -278,11 +266,15 @@ class DocumentStorage:
         company_id: str = "default",
         document_type: str = "document",
     ) -> dict:
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,120}", company_id):
+            raise ValueError("Invalid company storage prefix")
         timestamp = datetime.now(UTC).strftime(
             "%Y/%m/%d"
         )
 
-        unique_id = str(uuid.uuid4())[:8]
+        unique_id = uuid.uuid4().hex
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,120}", document_type):
+            raise ValueError("Invalid document type storage prefix")
         extension = Path(filename).suffix
 
         key = (
@@ -318,17 +310,18 @@ class DocumentStorage:
     ) -> dict:
         import io
 
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,120}", company_id):
+            raise ValueError("Invalid company storage prefix")
         timestamp = datetime.now(UTC).strftime(
             "%Y/%m/%d"
         )
 
-        unique_id = str(uuid.uuid4())[:8]
+        unique_id = uuid.uuid4().hex
 
         key = (
             f"{company_id}/checks/"
             f"{timestamp}/"
-            f"check_{check_number}_"
-            f"{unique_id}.png"
+            f"check_{unique_id}.png"
         )
 
         file = io.BytesIO(image_data)

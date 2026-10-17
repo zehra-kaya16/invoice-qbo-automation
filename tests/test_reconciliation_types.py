@@ -166,7 +166,7 @@ def test_batch_plan_and_push_use_reviewed_kernel(kind,actor,monkeypatch):
     from tests.test_batch_push import push
     batch=upload().json();id=batch['uploaded_documents'][0];doc=DocumentRepository().get(id)
     evidence=seed(kind)
-    doc.update({k:v for k,v in evidence.items() if k not in {'id','_revision','batch_id'}})
+    doc.update({k:v for k,v in evidence.items() if k not in {'id','_revision','batch_id','source_storage','storage_key'}})
     if kind=='check':doc['extracted_data']=prepare_standalone_check(doc,CheckData(**evidence['extracted_data']))
     DocumentRepository().save(doc)
     fake=ReconcileQBO(id,kind);monkeypatch.setattr('app.api.qbo._get_connected_qbo_client',lambda:fake)

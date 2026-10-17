@@ -18,6 +18,20 @@ class Settings(BaseSettings):
     # Database
     database_url: Optional[str] = None
 
+    # Private document objects. All access continues through authenticated APIs.
+    storage_type: Literal["local", "s3", "r2"] = "local"
+    local_storage_path: str = "./uploads"
+    local_storage_id: str = "receipt-ai-local-v1"
+    s3_bucket: Optional[str] = None
+    s3_region: str = "us-east-1"
+    s3_access_key: Optional[str] = Field(default=None, repr=False)
+    s3_secret_key: Optional[str] = Field(default=None, repr=False)
+    s3_endpoint: Optional[str] = None
+    r2_bucket: Optional[str] = None
+    r2_account_id: Optional[str] = None
+    r2_access_key: Optional[str] = Field(default=None, repr=False)
+    r2_secret_key: Optional[str] = Field(default=None, repr=False)
+
     # Browser sessions: enable Secure cookies when served over HTTPS.
     auth_cookie_secure: bool = False
     auth_session_hours: int = 12

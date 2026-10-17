@@ -104,8 +104,9 @@ def _persist_batch(user, scope, key, fingerprint, total_files, prepared, errors)
             existing = _existing(session, user, key, fingerprint)
             if existing:
                 return _status(session, existing)
-            # Same persisted document contract as individual upload; all source
-            # bytes and the batch membership are committed in one transaction.
+            # Verify private source objects before committing DB pointers and batch
+            # membership atomically. Failed commits can leave unreferenced objects;
+            # never delete them here because another concurrent writer may use one.
             if session.get(Company, user.company_id) is None:
                 raise HTTPException(403, "Company is unavailable")
             batch_id = "batch_" + uuid.uuid4().hex
@@ -118,8 +119,10 @@ def _persist_batch(user, scope, key, fingerprint, total_files, prepared, errors)
                          "extracted_data": None, "validation": None, "approved": False,
                          "qbo_push_state": "not_started", "qbo_transaction_id": None,
                          "qbo_transaction_type": None, "qbo_push_error": None, "batch_id": batch_id}
+                from app.services.storage.objects import externalize
+                stored_content = externalize(state, content, user.company_id)
                 session.add(Document(api_id=document_id, company_id=user.company_id, filename=filename,
-                                     content_type=media, file_size=len(content), source_content=content,
+                                     content_type=media, file_size=len(content), source_content=stored_content, storage_key=state.get("storage_key"),
                                      status="uploaded", workflow_state=state))
             batch = UploadBatch(id=batch_id, company_id=user.company_id, request_key=key,
                                 fingerprint=fingerprint, total_files=total_files, document_ids=ids,

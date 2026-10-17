@@ -87,7 +87,7 @@ def snapshot(document):
 
 @router.get('/{document_id}/recovery')
 def get_recovery(document_id: str):
-    return snapshot(api._load_document(document_id))
+    return snapshot(api._load_document(document_id, load_sources=False))
 
 
 def _entry(document, key):

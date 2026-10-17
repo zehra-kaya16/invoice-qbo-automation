@@ -13,11 +13,13 @@ from enum import Enum
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.orm import defer
 
 from app.core import database
 from app.core.auth import current_principal, company_key as authorized_company_key
 from app.models.database import Company, Document
 from app.services.persistence.check_sources import capture_check_sources
+from app.services.storage.objects import externalize, hydrate, update_caller_refs
 
 
 class DocumentConflictError(RuntimeError):
@@ -46,11 +48,12 @@ class DocumentRepository:
         user = current_principal.get()
         return (Document.company_id == user.company_id,) if user else ()
 
-    def get(self, document_id: str) -> dict | None:
+    def get(self, document_id: str, *, load_sources: bool = True) -> dict | None:
         with self._session() as session:
-            row = session.scalar(
-                select(Document).where(Document.api_id == document_id, *self._scope())
-            )
+            query = select(Document).where(Document.api_id == document_id, *self._scope())
+            if not load_sources:
+                query = query.options(defer(Document.source_content))
+            row = session.scalar(query)
             if row is None:
                 return None
             if row.workflow_state is None:
@@ -59,9 +62,14 @@ class DocumentRepository:
             # Return an independent snapshot, not an ORM mutable JSON object.
             document = json.loads(json.dumps(row.workflow_state))
             document["id"] = row.api_id
-            document["content"] = row.source_content
+            legacy_content = row.source_content if load_sources else None
+            company_uuid = row.company_id
             document["_revision"] = row.revision
-            return document
+        if load_sources:
+            document["content"] = hydrate(document, legacy_content, company_uuid)
+        else:
+            document["_metadata_only"] = True
+        return document
 
     def list_summaries(self, company_key: str, limit: int, offset: int) -> dict:
         company_key = authorized_company_key(company_key)
@@ -86,7 +94,9 @@ class DocumentRepository:
                 for row in rows
             ]}
 
-    def save(self, document: dict) -> None:
+    def save(self, document: dict, *, migrate_source: bool = False) -> None:
+        if document.get("_metadata_only"):
+            raise ValueError("Reload the full document before saving")
         document_id = document.get("id")
         if not isinstance(document_id, str) or not document_id:
             raise ValueError("Document id is required")
@@ -161,6 +171,9 @@ class DocumentRepository:
                     if row.workflow_state.get("company_id") != company_key:
                         raise ValueError("Document company_id cannot be changed")
 
+                stored_content = externalize(state, content, row.company_id,
+                    original=expected_revision is None or bool(state.get("source_storage")) or migrate_source,
+                    rebind=migrate_source)
                 row.filename = state["filename"]
                 row.content_type = state.get("content_type")
                 row.file_size = len(content) if content is not None else None
@@ -168,7 +181,7 @@ class DocumentRepository:
                 row.document_type = state.get("document_type")
                 row.status = state.get("status", "uploaded")
                 row.error_message = state.get("error")
-                row.source_content = content
+                row.source_content = stored_content
                 row.workflow_state = state
 
                 session.flush()
@@ -184,4 +197,5 @@ class DocumentRepository:
                 raise
 
         # Advance the caller's version only after the commit succeeded.
+        update_caller_refs(document, state)
         document["_revision"] = revision

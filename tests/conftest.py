@@ -9,6 +9,12 @@ from app.models.database import Base
 @pytest.fixture(autouse=True)
 def isolated_document_database(tmp_path, monkeypatch):
     """Every test gets its own database, never the developer's real DB."""
+    from app.core.config import settings
+    storage_path = str(tmp_path / "private-objects")
+    monkeypatch.setattr(settings, "storage_type", "local")
+    monkeypatch.setattr(settings, "local_storage_path", storage_path)
+    monkeypatch.setenv("STORAGE_TYPE", "local")
+    monkeypatch.setenv("LOCAL_STORAGE_PATH", storage_path)
     path = tmp_path / "api_documents.db"
     engine = create_engine(f"sqlite:///{path.as_posix()}")
     Base.metadata.create_all(engine)
