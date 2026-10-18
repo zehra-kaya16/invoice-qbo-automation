@@ -35,6 +35,9 @@ def track_transition(session, company_id, document_id, revision, before, after):
         return
     before = before or {}
     def event(name, suffix='', value=None, duration=None):
+        from app.services.integrations.notifications import queue_transition
+        queue_transition(session, company_id, document_id,
+            f'{document_id}:{revision}:{name}:{suffix}', name, after)
         session.add(AnalyticsEvent(company_id=company_id, document_id=document_id,
             event_key=f'{document_id}:{revision}:{name}:{suffix}', name=name,
             value=_number(value), duration_ms=_number(duration)))

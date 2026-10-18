@@ -36,6 +36,20 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = False
     auth_session_hours: int = 12
 
+    # Signed integration ingestion; exact public HTTPS hosts, no wildcards.
+    webhook_download_hosts: str = ""
+    email_enabled: bool = False
+    email_provider: Literal["smtp", "sendgrid", "resend", "postmark"] = "smtp"
+    email_from: Optional[str] = None
+    smtp_host: Optional[str] = None
+    smtp_port: int = Field(587, ge=1, le=65535)
+    smtp_security: Literal["starttls", "ssl"] = "starttls"
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = Field(default=None, repr=False)
+    sendgrid_api_key: Optional[str] = Field(default=None, repr=False)
+    resend_api_key: Optional[str] = Field(default=None, repr=False)
+    postmark_api_key: Optional[str] = Field(default=None, repr=False)
+
     # Redis
     redis_url: Optional[str] = None
 

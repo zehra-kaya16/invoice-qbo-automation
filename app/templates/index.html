@@ -65,6 +65,31 @@
         <p class="muted">Fatura, fiş ve ekstrelerini yükle; kayıtlarını ve kaynak dosyalarını görüntüle.</p></div>
       <button id="choose-files" class="button primary" type="button">+ Belge yükle</button>
     </div>
+    <details id="integrations-panel" class="account-panel" hidden>
+      <summary>Belge entegrasyonları</summary>
+      <p class="muted small">İmzalı istekler bu şirkete belge ekler. E-posta/Zapier bağlantısı, uygulamanın imza protokolüne uygun bir adaptör gerektirir.</p>
+      <form id="integration-form" class="auth-form">
+        <label>Entegrasyon adı<input id="integration-name" required maxlength="100" autocomplete="off"></label>
+        <label><input id="integration-auto" type="checkbox"> Gelen belgeleri otomatik extraction kuyruğuna ekle</label>
+        <button class="button primary" type="submit">Entegrasyon oluştur</button>
+      </form>
+      <p class="small muted">Otomatik extraction, AI kullanım maliyeti doğurabilir. QBO aktarımı için ayrıca inceleme ve onay gerekir.</p>
+      <p id="integration-secret-label" class="small" hidden>İmza anahtarı yalnız şimdi gösterilir. Adaptörüne kaydet; bu panel kapanınca gizlenir.</p>
+      <pre id="integration-secret" class="raw-extraction" hidden></pre>
+      <button id="integrations-refresh" class="button secondary" type="button">Entegrasyonları yenile</button>
+      <div id="integrations-list"></div><div id="integration-events"></div>
+      <p id="integration-message" class="small muted" role="status"></p>
+      <p id="integration-error" class="error-message" role="alert" hidden></p>
+    </details>
+    <details id="notifications-panel" class="account-panel">
+      <summary>E-posta bildirimlerim</summary>
+      <p id="notification-channel" class="small muted"></p>
+      <label><input id="notification-optin" type="checkbox"> Hesabımın e-posta adresine extraction ve QBO sonuç bildirimleri gönder</label>
+      <button id="notifications-refresh" class="button secondary" type="button">Bildirimleri yenile</button>
+      <p class="small muted">Sağlayıcının kabul etmesi teslim edildiği anlamına gelmez. Belirsiz gönderimler tekrar gönderilmez; e-posta sağlayıcısından kontrol edilmelidir.</p>
+      <div id="notifications-list"></div>
+      <p id="notification-error" class="error-message" role="alert" hidden></p>
+    </details>
     <details id="analytics-panel" class="account-panel">
       <summary>Şirket istatistikleri</summary>
       <p class="muted small">Belge durumları tüm kayıtlarını kapsar. Olaylar ve süreler, 112. adımdan sonra kaydedilen seçili döneme aittir. Yenile ile güncelle.</p>

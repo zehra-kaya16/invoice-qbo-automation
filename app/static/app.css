@@ -65,3 +65,9 @@
 #analytics-panel th,#analytics-panel td {padding:9px;text-align:left;border-bottom:1px solid var(--border);overflow-wrap:anywhere;}
 #analytics-panel .table-scroll {overflow-x:auto;max-width:100%;}
 #analytics-panel {min-width:0;}
+/* Integration secrets and long provider/event references must fit small screens. */
+#integrations-panel code,#integrations-panel pre,#notifications-list p {white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;}
+#integrations-panel .button,#notifications-panel .button {white-space:normal;margin:6px 6px 6px 0;max-width:100%;}
+#integrations-panel .table-scroll {overflow-x:auto;max-width:100%;}
+#integration-events th,#integration-events td {padding:9px;overflow-wrap:anywhere;}
+#integration-secret {padding:12px;background:#f5f7fb;border-radius:8px;}

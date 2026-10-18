@@ -1369,12 +1369,79 @@
     } catch (error) { el("login-error").textContent=errorMessage(error);el("login-error").hidden=false; }
     finally { el("login-submit").disabled=false; }
   });
+  let integrationBusy=false, notificationBusy=false;
+  const notificationLabels={pending:"Bekliyor",sending:"Gönderim sürüyor",accepted:"Sağlayıcı kabul etti",failed_before_send:"Gönderim başlamadı",uncertain:"Sonuç belirsiz — sağlayıcıdan kontrol et",cancelled:"İptal edildi"};
+  function clearIntegrationSecret(){el("integration-secret").textContent="";el("integration-secret").hidden=true;el("integration-secret-label").hidden=true;}
+  function showIntegrationSecret(data){el("integration-secret").textContent=`${data.id}\n${data.secret}`;el("integration-secret").hidden=false;el("integration-secret-label").hidden=false;}
+  async function integrationAction(work){
+    if(integrationBusy)return;integrationBusy=true;el("integration-error").hidden=true;
+    try{await work();}catch(error){el("integration-error").textContent=errorMessage(error);el("integration-error").hidden=false;}
+    finally{integrationBusy=false;}
+  }
+  async function loadIntegrations(){
+    if(auth.user?.role!=="admin")return;
+    const data=await json("/api/integrations/webhooks");el("integrations-list").replaceChildren();
+    for(const item of data.items){
+      const card=node("div",undefined,"validation-panel");card.append(node("strong",`${item.name} · ${item.enabled?"Aktif":"İptal edildi"}`));
+      card.append(node("p",`Otomatik extraction: ${item.auto_extract?"Açık":"Kapalı"}`,"small"));
+      card.append(node("code",`${window.location.origin}/api/webhooks/${item.id}/generic`));
+      for(const [title,action] of [["Olayları göster","events"],["Anahtarı yenile","rotate"],["Entegrasyonu iptal et","revoke"]]){
+        if(!item.enabled&&action!=="events")continue;
+        const button=node("button",title,"button secondary");button.type="button";
+        button.addEventListener("click",()=>void integrationAction(async()=>{
+          if(action==="events"){
+            const result=await json(`/api/integrations/webhooks/${item.id}/events`);el("integration-events").replaceChildren();
+            const names={receiving:"Alınıyor — kesintide yönetici kontrolü gerekir",accepted:"Kaydedildi",retryable:"Aynı olay tekrar gönderilebilir"};
+            analyticsTable(el("integration-events"),`${item.name} · Son 100 olay`,["Kayıt ID","Olay kimliği","Durum","Batch","Extraction"],result.items.map(x=>[x.id,x.event_id,names[x.status]||x.status,x.batch_id||"—",x.run_id||"—"]));
+          }else{
+            if(!window.confirm(action==="rotate"?"Eski anahtar geçersiz olacak. Yeni anahtarı adaptörüne kaydetmeye hazır mısın?":"Yeni istekler ve henüz başlamamış otomatik extraction işlemleri engellenecek. Devam edilsin mi?"))return;
+            clearIntegrationSecret();const result=await json(`/api/integrations/webhooks/${item.id}/${action}`,{method:"POST"});
+            if(result.secret)showIntegrationSecret(result);await loadIntegrations();
+          }
+        }));card.append(button);
+      }el("integrations-list").append(card);
+    }
+    if(!data.items.length)el("integrations-list").append(node("p","Henüz entegrasyon yok.","muted small"));
+  }
+  el("integration-form").addEventListener("submit",event=>{event.preventDefault();void integrationAction(async()=>{
+    clearIntegrationSecret();const data=await json("/api/integrations/webhooks",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:el("integration-name").value.trim(),auto_extract:el("integration-auto").checked})});
+    showIntegrationSecret(data);el("integration-name").value="";el("integration-auto").checked=false;await loadIntegrations();
+  });});
+  el("integrations-panel").addEventListener("toggle",()=>{if(el("integrations-panel").open)void integrationAction(loadIntegrations);else clearIntegrationSecret();});
+  el("integrations-refresh").addEventListener("click",()=>void integrationAction(loadIntegrations));
+  async function notificationAction(work){
+    if(notificationBusy)return;notificationBusy=true;el("notification-optin").disabled=true;el("notification-error").hidden=true;
+    try{await work();}catch(error){el("notification-error").textContent=errorMessage(error);el("notification-error").hidden=false;}
+    finally{notificationBusy=false;el("notification-optin").disabled=false;}
+  }
+  async function loadNotifications(){
+    const data=await json("/api/integrations/notifications");el("notification-optin").checked=data.enabled;
+    el("notification-channel").textContent=`${data.email} · ${data.channel_enabled?"Sunucunun e-posta kanalı açık":"Sunucunun e-posta kanalı kapalı; gönderim yapılmaz"}`;
+    el("notifications-list").replaceChildren();
+    for(const item of data.items){
+      const card=node("div",undefined,"validation-panel");card.append(node("p",`${item.filename} · ${notificationLabels[item.status]||item.status}`));
+      card.append(node("p",`${analyticsEvents[item.kind]||item.kind} · ${item.document_id}`,"small muted"));
+      card.append(node("p",`Bildirim ID: ${item.id}`,"small muted"));
+      if(item.provider_id)card.append(node("p",`Sağlayıcı referansı: ${item.provider_id}`,"small muted"));
+      if(["pending","failed_before_send"].includes(item.status)){
+        const action=item.status==="pending"?"cancel":"retry";const button=node("button",action==="cancel"?"Bekleyen bildirimi iptal et":"Yapılandırmayı düzelttim; tekrar kuyruğa al","button secondary");button.type="button";
+        button.addEventListener("click",()=>void notificationAction(async()=>{await json(`/api/integrations/notifications/${item.id}/${action}`,{method:"POST"});await loadNotifications();}));card.append(button);
+      }el("notifications-list").append(card);
+    }
+    if(!data.items.length)el("notifications-list").append(node("p","Bildirim kaydı yok. Bildirimler yalnız kanal açıkken oluşan yeni olaylar için kaydedilir.","small muted"));
+  }
+  el("notifications-panel").addEventListener("toggle",()=>{if(el("notifications-panel").open)void notificationAction(loadNotifications);});
+  el("notifications-refresh").addEventListener("click",()=>void notificationAction(loadNotifications));
+  el("notification-optin").addEventListener("change",()=>{const enabled=el("notification-optin").checked;void notificationAction(async()=>{
+    try{await json("/api/integrations/notifications",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled})});}finally{await loadNotifications();}
+  });});
   async function initializeSession() {
     try {
       auth.user=await json("/api/auth/me");auth.csrf=auth.user.csrf_token;
       el("login-panel").hidden=true;el("main").hidden=false;el("auth-logout").hidden=false;
       el("auth-identity").textContent=`${auth.user.company.name} · ${auth.user.email}`;
       el("users-panel").hidden=auth.user.role!=="admin";
+      el("integrations-panel").hidden=auth.user.role!=="admin";
       await Promise.all([loadDocuments(0),checkQBO(),loadBatches(0)]);
       if (auth.user.role==="admin") await accountAction(loadUsers);
     } catch (error) {

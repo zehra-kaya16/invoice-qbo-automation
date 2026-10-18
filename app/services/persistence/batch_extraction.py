@@ -164,7 +164,12 @@ def run_once(run_id=None):
         row = _owned_run(session, id, claim)
         owner_hash, owner_id, company_id = row.owner_session_hash, row.owner_user_id, row.company_id
         items = copy.deepcopy(row.items)
-    principal = AuthRepository().principal(owner_hash)
+        batch_id = row.batch_id
+    if owner_hash.startswith('integration:'):
+        from app.services.integrations.webhooks import extraction_principal
+        principal = extraction_principal(owner_hash, batch_id)
+    else:
+        principal = AuthRepository().principal(owner_hash)
     if principal is None or principal.user_id != owner_id or principal.company_id != company_id:
         return _finish(id, claim, cancelled=True)
     index = next((n for n, item in enumerate(items) if item["status"] == "queued"), None)

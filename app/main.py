@@ -7,7 +7,7 @@ from app.core.auth import company_access
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import documents, health, qbo, recovery, auth, export, batch, analytics
+from app.api import documents, health, qbo, recovery, auth, export, batch, analytics, integrations
 
 app = FastAPI(
     title="Invoice QBO Automation",
@@ -34,6 +34,9 @@ app.include_router(batch.router, prefix="/api/batch", tags=["Batch"], dependenci
 app.include_router(export.router, prefix="/api/export", tags=["Export"], dependencies=[Depends(company_access)])
 
 app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"], dependencies=[Depends(company_access)])
+
+app.include_router(integrations.router, prefix="/api/integrations", tags=["Integrations"], dependencies=[Depends(company_access)])
+app.include_router(integrations.ingress, prefix="/api/webhooks", tags=["Signed webhooks"])
 
 # Resolve paths relative to this module, including on Windows.
 app_directory = Path(__file__).resolve().parent

@@ -371,3 +371,59 @@ class AuditLog(Base):
     user_agent = Column(String(500))
     
     created_at = Column(DateTime, default=utc_now)
+
+
+class WebhookIntegration(Base):
+    __tablename__ = "webhook_integrations"
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    company_id = Column(UUID(as_uuid=False), ForeignKey("companies.id"), nullable=False, index=True)
+    owner_user_id = Column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=False)
+    name = Column(String(100), nullable=False)
+    secret = Column(Text, nullable=False)  # Fernet ciphertext, never returned by reads.
+    enabled = Column(Boolean, nullable=False, default=True)
+    auto_extract = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+
+
+class WebhookReceipt(Base):
+    __tablename__ = "webhook_receipts"
+    __table_args__ = (UniqueConstraint("integration_id", "event_id", name="uq_webhook_event"),)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    integration_id = Column(String(36), ForeignKey("webhook_integrations.id"), nullable=False)
+    company_id = Column(UUID(as_uuid=False), ForeignKey("companies.id"), nullable=False, index=True)
+    event_id = Column(String(36), nullable=False)
+    digest = Column(String(64), nullable=False)
+    kind = Column(String(10), nullable=False)
+    status = Column(String(20), nullable=False, default="receiving")
+    auto_extract = Column(Boolean, nullable=False)
+    batch_id = Column(String(50), ForeignKey("upload_batches.id"))
+    run_id = Column(String(50), ForeignKey("batch_extraction_runs.id"))
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+
+
+class NotificationPreference(Base):
+    __tablename__ = "notification_preferences"
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id"), primary_key=True)
+    company_id = Column(UUID(as_uuid=False), ForeignKey("companies.id"), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=False)
+    recipient_email = Column(String(255), nullable=False)
+
+
+class NotificationOutbox(Base):
+    __tablename__ = "notification_outbox"
+    __table_args__ = (UniqueConstraint("user_id", "event_key", name="uq_notification_event"),
+                     Index("ix_notification_pending", "status", "created_at"))
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    company_id = Column(UUID(as_uuid=False), ForeignKey("companies.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=False)
+    recipient_email = Column(String(255), nullable=False)
+    event_key = Column(String(255), nullable=False)
+    kind = Column(String(64), nullable=False)
+    document_id = Column(String(120), nullable=False)
+    filename = Column(String(255), nullable=False)
+    status = Column(String(24), nullable=False, default="pending")
+    claim_token = Column(String(32))
+    provider_id = Column(String(255))
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+    attempted_at = Column(DateTime)
+    finished_at = Column(DateTime)
