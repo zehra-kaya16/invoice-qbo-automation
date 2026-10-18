@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
-python -m alembic upgrade head
+# Migrations have one explicit Compose service; workers never race Alembic.
+python manage_deployment.py validate-runtime
 exec "$@"

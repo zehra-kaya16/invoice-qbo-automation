@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     max_pdf_pages: int = Field(50, ge=1)
     max_heic_pixels: int = Field(40_000_000, ge=1, le=80_000_000)
 
+    deployment_mode: Literal["local", "compose"] = "local"
+
     # Database
     database_url: Optional[str] = None
 

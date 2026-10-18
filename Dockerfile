@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=appuser:appuser . .
 
-RUN mkdir -p /app/uploads && chown appuser:appuser /app/uploads
+RUN mkdir -p /app/uploads /app/beat && chown appuser:appuser /app/uploads /app/beat
 
 RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 

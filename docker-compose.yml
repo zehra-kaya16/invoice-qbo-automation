@@ -1,97 +1,119 @@
+# Compose v2.30+ (raw env_file keeps $, quotes and # in provider passwords).
+name: invoice-qbo-stack
+
+x-runtime: &runtime
+  image: invoice-qbo-automation:local
+  build: .
+  env_file:
+    - path: .env.docker
+      format: raw
+  environment: &runtime-env
+    DEPLOYMENT_MODE: compose
+    DATABASE_URL: postgresql+psycopg2://receiptai:${POSTGRES_PASSWORD:?Run prepare_docker.py first}@db:5432/receiptai
+    REDIS_URL: redis://:${REDIS_PASSWORD:?Run prepare_docker.py first}@redis:6379/0
+    LOCAL_STORAGE_PATH: /app/uploads
+  volumes:
+    - upload_data:/app/uploads
+  init: true
+
 services:
-  app:
-    build: .
-    ports:
-      - "8000:8000"
-
-    environment:
-      - APP_ENV=development
-      - DATABASE_URL=postgresql://receiptai:receiptai@db:5432/receiptai
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_TYPE=${STORAGE_TYPE:-local}
-      - LOCAL_STORAGE_PATH=/app/uploads
-
-    env_file:
-      - .env
-
-    volumes:
-      - upload_data:/app/uploads
-      - ./app:/app/app
-
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-
-    restart: unless-stopped
-
-
   db:
     image: postgres:16-alpine
-
     environment:
-      - POSTGRES_USER=receiptai
-      - POSTGRES_PASSWORD=receiptai
-      - POSTGRES_DB=receiptai
-
+      POSTGRES_USER: receiptai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run prepare_docker.py first}
+      POSTGRES_DB: receiptai
     volumes:
       - postgres_data:/var/lib/postgresql/data
-
-    ports:
-      - "127.0.0.1:5432:5432"
-
-    restart: unless-stopped
-
-
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
       interval: 5s
       timeout: 5s
       retries: 20
-
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-
-    ports:
-      - "127.0.0.1:6379:6379"
-
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Run prepare_docker.py first}
+    command: [redis-server, --requirepass, '${REDIS_PASSWORD:?Run prepare_docker.py first}', --appendonly, 'yes', --maxmemory-policy, noeviction]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     restart: unless-stopped
 
+  migrate:
+    <<: *runtime
+    command: [python, -m, alembic, upgrade, head]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: 'no'
 
-  worker:
-    profiles: ["worker-tools"]
-    build: .
-
-    environment:
-      - APP_ENV=development
-      - DATABASE_URL=postgresql://receiptai:receiptai@db:5432/receiptai
-      - REDIS_URL=redis://redis:6379/0
-      - STORAGE_TYPE=${STORAGE_TYPE:-local}
-      - LOCAL_STORAGE_PATH=/app/uploads
-
-    env_file:
-      - .env
-
-    volumes:
-      - upload_data:/app/uploads
-      - ./app:/app/app
-
+  app:
+    <<: *runtime
+    ports:
+      - '${APP_BIND:-127.0.0.1}:${APP_PORT:-8000}:8000'
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
-    entrypoint: ["celery"]
-    command: ["-A", "app.tasks:celery_app", "worker", "--loglevel=info"]
+  worker:
+    <<: *runtime
+    command: [celery, -A, 'app.tasks:celery_app', worker, --loglevel=info, '--hostname=worker@%h', --concurrency=2]
+    depends_on:
+      app:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, manage_deployment.py, worker-health]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    stop_grace_period: 330s
+    restart: unless-stopped
 
+  beat:
+    <<: *runtime
+    command: [celery, -A, 'app.tasks:celery_app', beat, --loglevel=info, '--scheduler=app.tasks.scheduler:DeploymentScheduler', --schedule=/app/beat/celerybeat-schedule, --pidfile=]
+    volumes:
+      - upload_data:/app/uploads
+      - beat_data:/app/beat
+    depends_on:
+      worker:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, manage_deployment.py, beat-health]
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  operator:
+    <<: *runtime
+    profiles: [operator]
+    command: [python, manage_deployment.py, check]
     healthcheck:
       disable: true
-      
-    restart: unless-stopped
 
 volumes:
   postgres_data:
+  redis_data:
   upload_data:
+  beat_data:

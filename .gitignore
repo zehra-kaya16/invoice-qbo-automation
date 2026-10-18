@@ -38,3 +38,7 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+# Local Docker credentials and imported data
+.env.compose
+.env.docker
+backups/

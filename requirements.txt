@@ -12,6 +12,7 @@ cryptography>=42.0.0
 intuit-oauth>=1.2.6
 python-quickbooks>=0.9.12,<0.10
 # Testing
+PyYAML>=6.0,<7
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
 httpx>=0.26.0

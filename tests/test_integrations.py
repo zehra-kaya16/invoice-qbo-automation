@@ -300,8 +300,18 @@ def test_crash_sending_offline_recovery(notices_ready,monkeypatch):
 
 @pytest.mark.parametrize('provider',['smtp','sendgrid','resend','postmark'])
 def test_mock_provider_payload_tls_escape(notices_ready,monkeypatch,provider):
-    notices_ready();monkeypatch.setattr(settings,'email_provider',provider)
-    if provider!='smtp':monkeypatch.setattr(settings,provider+'_api_key','test-only-key')
+    notices_ready()
+    monkeypatch.setattr(settings, 'email_provider', provider)
+
+    if provider == 'smtp':
+        monkeypatch.setattr(settings, 'smtp_username', None)
+        monkeypatch.setattr(settings, 'smtp_password', None)
+    else:
+        monkeypatch.setattr(
+            settings,
+            provider + '_api_key',
+            'test-only-key'
+        )
     calls=[]
     class SMTP:
         def __init__(self,*a,**k):assert k['timeout']==15

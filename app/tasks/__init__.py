@@ -20,8 +20,15 @@ celery_app = Celery(
 
 
 celery_app.conf.update(
-    imports=("app.tasks.extraction", "app.tasks.notifications"),
-    beat_schedule={"notification-outbox": {"task": "receipt_ai.process_notification", "schedule": 2.0}, "batch-extraction-queue": {"task": "receipt_ai.process_batch_extraction", "schedule": 2.0}},
+    imports=("app.tasks.extraction", "app.tasks.notifications", "app.tasks.deployment"),
+    beat_schedule={"notification-outbox": {"task": "receipt_ai.process_notification", "schedule": 2.0, "options": {"expires": 10}}, "batch-extraction-queue": {"task": "receipt_ai.process_batch_extraction", "schedule": 2.0, "options": {"expires": 10}}},
+    broker_connection_retry_on_startup=True,
+    broker_transport_options={"visibility_timeout": 3600},
+    worker_prefetch_multiplier=1,
+    task_acks_late=False,
+    task_reject_on_worker_lost=False,
+    task_ignore_result=True,
+    result_expires=60,
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",

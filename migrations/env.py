@@ -15,7 +15,7 @@ from app.core.config import settings
 config = context.config
 
 # Set database URL from settings
-config.set_main_option("sqlalchemy.url", settings.database_url or "sqlite:///./receipt_ai.db")
+config.set_main_option("sqlalchemy.url", (settings.database_url or "sqlite:///./receipt_ai.db").replace("%", "%%"))
 
 # Configure logging
 if config.config_file_name is not None:
@@ -49,20 +49,23 @@ def run_migrations_online() -> None:
     
     Creates actual database connection.
     """
+    provided = config.attributes.get("connection")
+    if provided is not None:
+        configure_connection(provided)
+        return
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
+        prefix="sqlalchemy.", poolclass=pool.NullPool,
     )
-
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-        )
+        configure_connection(connection)
 
-        with context.begin_transaction():
-            context.run_migrations()
+
+def configure_connection(connection):
+    context.configure(connection=connection, target_metadata=target_metadata)
+    with context.begin_transaction():
+        context.run_migrations()
+
 
 
 if context.is_offline_mode():
