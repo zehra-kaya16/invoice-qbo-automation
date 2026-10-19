@@ -1,0 +1,16 @@
+# Use ONLY with: -p invoice-qbo-restore-drill -f docker-compose.yml -f docker-compose.restore.yml
+services:
+  app:
+    ports: !override
+      - '127.0.0.1:8001:8000'
+    environment:
+      EMAIL_ENABLED: 'false'
+  worker:
+    environment:
+      EMAIL_ENABLED: 'false'
+  beat:
+    environment:
+      EMAIL_ENABLED: 'false'
+  operator:
+    environment:
+      EMAIL_ENABLED: 'false'

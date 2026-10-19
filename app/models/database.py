@@ -427,3 +427,14 @@ class NotificationOutbox(Base):
     created_at = Column(DateTime, nullable=False, default=utc_now)
     attempted_at = Column(DateTime)
     finished_at = Column(DateTime)
+
+
+class RestoreCheckpoint(Base):
+    """Durable hold after point-in-time restore; external systems are not rolled back."""
+    __tablename__ = 'restore_checkpoints'
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    active_key = Column(String(10), unique=True, nullable=True)
+    backup_id = Column(String(36), nullable=False)
+    snapshot_at = Column(DateTime, nullable=False)
+    restored_at = Column(DateTime, nullable=False, default=utc_now)
+    released_at = Column(DateTime)

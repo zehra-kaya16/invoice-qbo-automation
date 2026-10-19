@@ -131,3 +131,25 @@ def test_live_postgres_outbox_concurrent_claim(pg,monkeypatch):
     with ThreadPoolExecutor(max_workers=2) as executor:list(executor.map(lambda _:notifications.run_once(),range(2)))
     assert len(calls)==1
     with database.SessionLocal() as session:assert session.scalar(select(NotificationOutbox.status))=='accepted'
+
+
+def test_live_postgres_encrypted_backup_restore_hold(pg,tmp_path,monkeypatch):
+    from app.services.deployment import backups,restore_guard
+    from app.services.storage.objects import write_object
+    source=create_engine('sqlite:///'+str(tmp_path/'backup-source.db'));Base.metadata.create_all(source);stamp(source)
+    company=str(uuid.uuid4());id='doc_drill115';content=b'backup-and-restore-original'
+    ref=write_object(content,'image/png',company,id,'original')
+    with source.begin() as conn:
+        conn.execute(Company.__table__.insert().values(id=company,name='DR test',api_key='restore-test'))
+        conn.execute(Document.__table__.insert().values(company_id=company,api_id=id,filename='source.png',status='pushed',
+            workflow_state={'id':id,'company_id':'restore-test','source_storage':ref,'status':'pushed','qbo_push_state':'succeeded','qbo_transaction_id':'existing-167'}))
+    path=tmp_path/'postgres.rqbackup'
+    try:
+        backups.create(source,path);assert backups.verify(path)['verified']
+        monkeypatch.setattr(settings,'local_storage_path',str(tmp_path/'restored'))
+        result=backups.restore(pg,path,apply=True)
+        assert result['outbound_hold'] and restore_guard.status()['active']
+        with pg.connect() as conn:assert conn.scalar(select(Document.workflow_state))['qbo_transaction_id']=='existing-167'
+        assert (Path(settings.local_storage_path)/ref['key']).read_bytes()==content
+        restore_guard.release(result['restore_id']);assert not restore_guard.status()['active']
+    finally:source.dispose()

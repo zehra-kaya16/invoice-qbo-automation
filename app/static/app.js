@@ -1268,6 +1268,10 @@
   el("batch-previous").addEventListener("click", () => loadBatches(Math.max(0, batchOffset - 20)));
   el("batch-next").addEventListener("click", () => loadBatches(batchOffset + 20));
   async function checkQBO() {
+    if (!el('restore-warning').hidden) {
+      el('qbo-status').textContent='Geri yükleme kontrolü — QBO bağlantısı bekletiliyor';
+      el('qbo-connect').hidden=true;el('qbo-disconnect').hidden=true;return;
+    }
     try {
       const data = await json("/api/qbo/status");
       el("qbo-status").classList.toggle("connected", data.connected);
@@ -1438,6 +1442,9 @@
   async function initializeSession() {
     try {
       auth.user=await json("/api/auth/me");auth.csrf=auth.user.csrf_token;
+      const restoreStatus=await json('/api/auth/recovery-status');
+      el('restore-warning').hidden=!restoreStatus.active;
+      el('restore-warning').textContent=restoreStatus.active?`Geri yükleme kontrolü sürüyor (${restoreStatus.snapshot_at}). Belgeleri inceleyebilirsin; işleme ve dış gönderimler operatör kontrolüne kadar bekletiliyor.`:'';
       el("login-panel").hidden=true;el("main").hidden=false;el("auth-logout").hidden=false;
       el("auth-identity").textContent=`${auth.user.company.name} · ${auth.user.email}`;
       el("users-panel").hidden=auth.user.role!=="admin";

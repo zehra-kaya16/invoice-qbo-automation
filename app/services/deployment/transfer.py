@@ -159,12 +159,16 @@ def transfer(source_engine, target_engine, *, local_from=None, apply=False, requ
                     target.execute(table.insert(),[dict(row) for row in batch])
                 if _digest(source,table)!=_digest(target,table):
                     raise TransferError('Target row contents differ; transaction rolled back')
-            if target.dialect.name=='postgresql':
-                # Explicit integer IDs do not advance a PostgreSQL sequence.
-                table=Base.metadata.tables['auth_login_attempts']
-                sequence=target.scalar(text("SELECT pg_get_serial_sequence('auth_login_attempts','id')"))
-                if sequence:
-                    maximum=target.scalar(select(func.max(table.c.id)))
-                    target.execute(text('SELECT setval(CAST(:seq AS regclass), :value, :called)'),
-                                   {'seq':sequence,'value':maximum or 1,'called':maximum is not None})
+            reset_sequences(target)
             return {'mode':'applied','rows':counts,'objects_verified':objects,'objects_copied':copied}
+
+
+def reset_sequences(target):
+    if target.dialect.name=='postgresql':
+        # Explicit integer IDs do not advance a PostgreSQL sequence.
+        table=Base.metadata.tables['auth_login_attempts']
+        sequence=target.scalar(text("SELECT pg_get_serial_sequence('auth_login_attempts','id')"))
+        if sequence:
+            maximum=target.scalar(select(func.max(table.c.id)))
+            target.execute(text('SELECT setval(CAST(:seq AS regclass), :value, :called)'),
+                           {'seq':sequence,'value':maximum or 1,'called':maximum is not None})

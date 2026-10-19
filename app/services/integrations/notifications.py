@@ -126,6 +126,9 @@ def allowed(session, row):
 
 
 def run_once():
+    from app.services.deployment.restore_guard import status as restore_status
+    if restore_status()['active']:
+        return None
     if not settings.email_enabled:
         return None
     with database.SessionLocal() as session:

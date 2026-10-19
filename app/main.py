@@ -4,7 +4,7 @@ from starlette.concurrency import run_in_threadpool
 
 from fastapi import FastAPI, Depends, Request
 from app.core.auth import company_access
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import documents, health, qbo, recovery, auth, export, batch, analytics, integrations
@@ -68,8 +68,17 @@ async def record_request_metric(request, clock, status):
 @app.middleware("http")
 async def private_responses(request: Request, call_next):
     clock = time.perf_counter()
+    from app.services.deployment.restore_guard import blocked_request, status, MESSAGE
+    from sqlalchemy.exc import SQLAlchemyError
+    hold_response = None
+    if blocked_request(request.method, request.url.path):
+        try:
+            if (await run_in_threadpool(status))['active']:
+                hold_response = JSONResponse({'detail': MESSAGE}, status_code=409)
+        except SQLAlchemyError:
+            hold_response = JSONResponse({'detail': 'Recovery status unavailable; run migrations and check database'}, status_code=503)
     try:
-        response = await call_next(request)
+        response = hold_response if hold_response is not None else await call_next(request)
     except Exception:
         await record_request_metric(request, clock, 500)
         raise

@@ -156,6 +156,9 @@ def _finish(id, claim, index=None, status=None, message=None, cancelled=False):
 
 def run_once(run_id=None):
     """Trusted worker entry point. It performs at most one document extraction."""
+    from app.services.deployment.restore_guard import status as restore_status
+    if restore_status()['active']:
+        return None
     owned = _claim(run_id)
     if owned is None:
         return None

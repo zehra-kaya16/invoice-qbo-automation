@@ -86,3 +86,9 @@ def change_password(body: PasswordChange, response: Response, user: Principal = 
     storage(AuthRepository().change_password, user, body.old_password, body.password)
     response.delete_cookie(COOKIE_NAME, path="/", secure=settings.auth_cookie_secure, httponly=True, samesite="lax")
     return {"status": "password_changed_sign_in_again"}
+
+
+@router.get('/recovery-status')
+def recovery_status(user: Principal = Depends(company_access)):
+    from app.services.deployment.restore_guard import status
+    return status()

@@ -42,3 +42,5 @@ htmlcov/
 .env.compose
 .env.docker
 backups/
+
+*.rqbackup

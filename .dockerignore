@@ -18,3 +18,5 @@ logs
 backups
 exports
 *.zip
+
+*.rqbackup
